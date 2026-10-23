@@ -1,0 +1,45 @@
+{
+  "name": "starta-codeview",
+  "version": "0.1.0",
+  "description": "Éditeur de code local avec agents IA (Z.ai, Mistral, Claude, OpenRouter), terminal et n8n.",
+  "scripts": {
+    "start": "node server/index.ts",
+    "dev": "concurrently -k -n srv,web \"node --watch server/index.ts --no-open\" \"vite --config web/vite.config.ts\"",
+    "build": "vite build --config web/vite.config.ts",
+    "typecheck": "tsc -p server/tsconfig.json && tsc -p web/tsconfig.json",
+    "test": "node --test test/e2e.test.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "dompurify": "^3.4.17",
+    "marked": "^18.1.1",
+    "ws": "^8.22.0",
+    "zustand": "^5.0.16"
+  },
+  "devDependencies": {
+    "@types/dompurify": "^3.0.5",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^6.1.2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "concurrently": "^10.0.6",
+    "lucide-react": "^1.61.0",
+    "monaco-editor": "^0.57.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  },
+  "private": false,
+  "engines": {
+    "node": ">=22.18"
+  }
+}
