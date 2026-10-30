@@ -26,6 +26,10 @@ export function TerminalPanel() {
     t.loadAddon(fit);
     t.open(host.current!);
     term.current = t;
+    // xterm avale les touches qu'il connaît (Ctrl+J = saut de ligne, etc.) : sans ceci, une fois le curseur dans le
+    // terminal, les raccourcis de l'application (Ctrl+J, Ctrl+B, Ctrl+1…4, Ctrl+P…) ne fonctionnent plus.
+    // Ctrl+C et Ctrl+V restent au terminal (interrompre / coller).
+    t.attachCustomKeyEventHandler((e) => !((e.ctrlKey || e.metaKey) && e.type === "keydown" && /^[jbplsw,`1-4]$/i.test(e.key)));
 
     const fresh = terminalIsEmpty();
     attachTerminal((d) => t.write(d));

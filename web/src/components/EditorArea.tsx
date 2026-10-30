@@ -104,7 +104,7 @@ export function EditorArea() {
           <div className="box">
             <Code2 />
             <div>Ouvre un fichier dans l'arborescence</div>
-            <div><kbd>Ctrl</kbd> <kbd>P</kbd> chercher · <kbd>Ctrl</kbd> <kbd>L</kbd> parler à l'agent · <kbd>Ctrl</kbd> <kbd>J</kbd> terminal</div>
+            <div><kbd>Ctrl</kbd> <kbd>P</kbd> chercher · <kbd>Ctrl</kbd> <kbd>1</kbd>…<kbd>4</kbd> aller à un chat · <kbd>Ctrl</kbd> <kbd>J</kbd> terminal</div>
           </div>
         </div>
       )}

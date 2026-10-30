@@ -76,7 +76,7 @@ export function App() {
               <>
                 <div className="col sidebar" style={{ width: sbW }}><Sidebar /></div>
                 <Resizer onDrag={(d) => setSbW(Math.min(560, Math.max(180, sbW + d)))} />
-                <div className="col editor-col" style={{ width: edW }}>
+                <div className="col editor-col" style={{ width: edW, maxWidth: "45%" }}>
                   <EditorArea />
                   {show.term && (
                     <>

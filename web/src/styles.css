@@ -67,8 +67,9 @@ button { background: none; border: 0; cursor: pointer; padding: 0; }
 kbd { font: 11px var(--font); background: var(--bg3); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; color: var(--text2); }
 
 /* ───── Disposition ───── */
-.app { height: 100%; display: grid; grid-template-rows: 40px 1fr 24px; }
-.body { display: flex; min-height: 0; }
+/* minmax(0, 1fr) : sans lui, la colonne de la grille s'élargit au contenu (4 chats de 300 px mini) et déborde de la fenêtre. */
+.app { height: 100%; display: grid; grid-template-rows: 40px 1fr 24px; grid-template-columns: minmax(0, 1fr); }
+.body { display: flex; min-height: 0; min-width: 0; overflow: hidden; }
 .col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .grow { flex: 1; }
 .resizer { width: 5px; margin: 0 -2px; cursor: col-resize; z-index: 5; position: relative; flex: none; }
