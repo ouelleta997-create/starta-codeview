@@ -287,6 +287,8 @@ kbd { font: 11px var(--font); background: var(--bg3); border: 1px solid var(--li
 .set-body { flex: 1; overflow: auto; padding: 18px 22px 24px; position: relative; }
 .set-body h2 { margin: 0 0 4px; font-size: 16px; } .set-body > p { margin: 0 0 16px; color: var(--text3); }
 .card { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: var(--bg2); }
+.set-body h3.sub { margin: 18px 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text3); font-weight: 600; }
+.card.compact { padding: 8px 14px; cursor: pointer; } .card.compact:hover { border-color: var(--bg4); background: var(--bg3); }
 .card-h { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-weight: 600; }
 .badge { font-size: 11px; font-weight: 500; padding: 0 7px; border-radius: 10px; background: var(--bg3); color: var(--text3); } .badge.ok { background: var(--accent-soft); color: var(--accent); }
 .field { display: flex; gap: 6px; } .field + .field, .field + .hint { margin-top: 6px; }

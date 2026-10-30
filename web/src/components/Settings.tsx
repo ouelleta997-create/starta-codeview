@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { X, KeyRound, Workflow, Bot, Mic, Palette as PaletteIcon, Check, Loader2, Trash2, ExternalLink } from "lucide-react";
+import { X, KeyRound, Workflow, Bot, Mic, Palette as PaletteIcon, Check, Loader2, Trash2, ExternalLink, ChevronRight } from "lucide-react";
 import { useStore } from "../store";
-import { api, PROVIDER_ORDER, type AppState, type ProviderId } from "../api";
+import { api, type AppState } from "../api";
 
 type Section = "providers" | "n8n" | "agent" | "voice" | "appearance";
 const NAV: { id: Section; label: string; icon: typeof KeyRound }[] = [
@@ -12,15 +12,8 @@ const NAV: { id: Section; label: string; icon: typeof KeyRound }[] = [
   { id: "appearance", label: "Apparence", icon: PaletteIcon },
 ];
 
-const KEY_LINKS: Record<ProviderId, { url: string; hint: string }> = {
-  anthropic: { url: "https://console.anthropic.com/settings/keys", hint: "sk-ant-…" },
-  zai: { url: "https://z.ai/manage-apikey/apikey-list", hint: "Clé API Z.ai" },
-  mistral: { url: "https://console.mistral.ai/api-keys", hint: "Clé API Mistral" },
-  openrouter: { url: "https://openrouter.ai/settings/keys", hint: "sk-or-…" },
-};
-
 function SecretCard({ name, title, badge, children, masked, configured, placeholder, onSaved, extra }: {
-  name: ProviderId | "n8n"; title: string; badge?: string; children?: React.ReactNode; masked: string; configured: boolean; placeholder: string; onSaved: () => void; extra?: React.ReactNode;
+  name: string; title: string; badge?: string; children?: React.ReactNode; masked: string; configured: boolean; placeholder: string; onSaved: () => void; extra?: React.ReactNode;
 }) {
   const [val, setVal] = useState("");
   const [busy, setBusy] = useState(false);
@@ -57,41 +50,98 @@ function SecretCard({ name, title, badge, children, masked, configured, placehol
   );
 }
 
-function Providers() {
-  const { app, loadModels } = useStore();
-  if (!app) return null;
-  const patchBase = async (p: ProviderId, baseUrl: string) => {
-    const next = { ...app.settings.baseUrls, [p]: baseUrl };
-    if (baseUrl === app.providers[p].defaultBaseUrl) delete next[p];
-    await useStore.getState().patchSettings({ baseUrls: next });
-    void loadModels();
+function ProviderCard({ id }: { id: string }) {
+  const app = useStore((st) => st.app)!;
+  const p = app.providers[id];
+  const [open, setOpen] = useState(p.configured);
+  const [val, setVal] = useState("");
+  const [url, setUrl] = useState(p.baseUrl);
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<{ ok: boolean; message: string } | null>(null);
+  const { setApp, loadModels, patchSettings } = useStore.getState();
+
+  const saveUrl = async (next: string) => {
+    const clean = next.trim().replace(/\/+$/, "");
+    const urls = { ...app.settings.baseUrls, [id]: clean };
+    if (clean === p.defaultBaseUrl) delete urls[id];
+    await patchSettings({ baseUrls: urls });
   };
+  const connect = async () => {
+    if (p.custom && !url.trim()) return setRes({ ok: false, message: "Renseigne d'abord l'adresse du serveur." });
+    setBusy(true);
+    try {
+      if (url.trim().replace(/\/+$/, "") !== p.baseUrl) await saveUrl(url);
+      setApp(await api<AppState>("PUT", `/api/secrets/${id}`, { value: val.trim() }));
+      setVal("");
+      setRes(await api("POST", `/api/test/${id}`));
+      void loadModels();
+    } catch (e) { setRes({ ok: false, message: (e as Error).message }); }
+    setBusy(false);
+  };
+  const test = async () => { setBusy(true); setRes(await api("POST", `/api/test/${id}`)); setBusy(false); };
+  const remove = async () => { setApp(await api<AppState>("DELETE", `/api/secrets/${id}`)); setRes(null); void loadModels(); };
+
+  if (!open)
+    return (
+      <div className="card compact" onClick={() => setOpen(true)} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && setOpen(true)}>
+        <div className="card-h" style={{ margin: 0 }}>{p.label}<span className="badge">{p.keyless ? "local" : p.custom ? "à configurer" : "non configuré"}</span><ChevronRight size={14} style={{ marginLeft: "auto", color: "var(--text3)" }} /></div>
+      </div>
+    );
+
+  return (
+    <div className="card">
+      <div className="card-h">{p.label}<span className={`badge ${p.configured ? "ok" : ""}`}>{p.configured ? (p.keyless ? "activé" : "connecté") : "non configuré"}</span>
+        {!p.configured && <button className="icon-btn sm" style={{ marginLeft: "auto" }} onClick={() => setOpen(false)} title="Replier"><X /></button>}
+      </div>
+      {p.presets.length > 0 && (
+        <div className="field">
+          <select className="input" value={p.baseUrl} onChange={(e) => { setUrl(e.target.value); void saveUrl(e.target.value).then(() => loadModels()); }}>
+            {p.presets.map((x) => <option key={x.baseUrl} value={x.baseUrl}>{x.label} — {x.baseUrl}</option>)}
+          </select>
+        </div>
+      )}
+      {(p.keyless || p.custom) && (
+        <div className="field">
+          <input className="input" spellCheck={false} placeholder={p.custom ? "https://mon-serveur.exemple/v1" : p.defaultBaseUrl} value={url} onChange={(e) => setUrl(e.target.value)} onBlur={() => url.trim().replace(/\/+$/, "") !== p.baseUrl && void saveUrl(url)} />
+        </div>
+      )}
+      <div className="field">
+        {!p.keyless && <input className="input" type="password" autoComplete="off" spellCheck={false} placeholder={p.configured && p.masked ? `${p.masked} — coller une nouvelle clé pour remplacer` : p.keyHint || "Clé API"} value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void connect()} />}
+        <button className="btn primary" disabled={busy || (!p.keyless && !p.custom && !val.trim())} onClick={() => void connect()}>{busy ? <Loader2 className="spin" /> : null}{p.keyless ? (p.configured ? "Enregistrer" : "Activer") : p.custom && !val.trim() ? "Connecter" : "Enregistrer"}</button>
+        {p.configured && <button className="btn" disabled={busy} onClick={() => void test()}>Tester</button>}
+        {p.configured && <button className="btn danger" onClick={() => void remove()} title={p.keyless ? "Désactiver" : "Retirer la clé"}><Trash2 /></button>}
+      </div>
+      <div className="hint">
+        {p.keyUrl && <a href={p.keyUrl} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>{p.keyless ? "Télécharger" : "Obtenir une clé"} <ExternalLink size={10} /></a>}
+        {p.baseUrl !== p.defaultBaseUrl && !p.keyless && !p.custom && <> · adresse personnalisée : {p.baseUrl}</>}
+        {p.keyless && <> · le serveur doit tourner sur cette machine ; choisis un modèle qui gère les outils.</>}
+        {p.custom && <> · n'importe quel serveur qui parle « OpenAI chat completions » (vLLM, LiteLLM, llama.cpp, un proxy d'entreprise…). Clé facultative.</>}
+      </div>
+      {res && <div className={`hint ${res.ok ? "good" : "bad"}`}>{res.ok ? <Check size={12} style={{ verticalAlign: -2 }} /> : null} {res.message}</div>}
+    </div>
+  );
+}
+
+function Providers() {
+  const app = useStore((st) => st.app);
+  const [q, setQ] = useState("");
+  if (!app) return null;
+  const ids = Object.keys(app.providers).filter((id) => !q.trim() || app.providers[id].label.toLowerCase().includes(q.trim().toLowerCase()) || id.includes(q.trim().toLowerCase()));
+  const on = ids.filter((id) => app.providers[id].configured);
+  const off = ids.filter((id) => !app.providers[id].configured);
   return (
     <>
       <h2>Fournisseurs</h2>
-      <p>Tes clés restent sur cette machine, chiffrées (AES-256-GCM). Elles ne sont envoyées qu'au fournisseur concerné.</p>
-      {PROVIDER_ORDER.map((id) => {
-        const p = app.providers[id];
-        return (
-          <SecretCard key={id} name={id} title={p.label} configured={p.configured} masked={p.masked} placeholder={KEY_LINKS[id].hint} onSaved={() => void loadModels()}
-            extra={
-              <>
-                {p.presets.length > 0 && (
-                  <div className="field">
-                    <select className="input" value={p.baseUrl} onChange={(e) => void patchBase(id, e.target.value)}>
-                      {p.presets.map((x) => <option key={x.baseUrl} value={x.baseUrl}>{x.label} — {x.baseUrl}</option>)}
-                    </select>
-                  </div>
-                )}
-                <div className="hint">
-                  <a href={KEY_LINKS[id].url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>Obtenir une clé <ExternalLink size={10} /></a>
-                  {p.baseUrl !== p.defaultBaseUrl && <> · adresse personnalisée : {p.baseUrl}</>}
-                </div>
-              </>
-            }
-          />
-        );
-      })}
+      <p>Tes clés restent sur cette machine, chiffrées (AES-256-GCM). Elles ne sont envoyées qu'au fournisseur concerné. {Object.keys(app.providers).length} fournisseurs, dont les serveurs locaux (Ollama, LM Studio) et n'importe quel serveur compatible OpenAI.</p>
+      <div className="field" style={{ marginBottom: 12 }}><input className="input" placeholder="Filtrer les fournisseurs…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+      {/* Une seule liste à clés stables : une carte qui passe de « Disponibles » à « Connectés » garde son état (message « Clé valide »). */}
+      {[
+        ...(on.length ? [<h3 key="h-on" className="sub">Connectés</h3>] : []),
+        ...on.map((id) => <ProviderCard key={id} id={id} />),
+        ...(off.length ? [<h3 key="h-off" className="sub">{on.length ? "Disponibles" : "Choisis un fournisseur"}</h3>] : []),
+        ...off.map((id) => <ProviderCard key={id} id={id} />),
+      ]}
+      {!ids.length && <div className="hint">Aucun fournisseur ne correspond.</div>}
     </>
   );
 }

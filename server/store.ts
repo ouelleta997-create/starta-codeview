@@ -8,8 +8,8 @@ fs.mkdirSync(path.join(DATA_DIR, "chats"), { recursive: true });
 
 // ───────────────────────── Réglages (non secrets) ─────────────────────────
 
-export type ProviderId = "zai" | "mistral" | "anthropic" | "openrouter";
-export const PROVIDER_IDS: ProviderId[] = ["zai", "mistral", "anthropic", "openrouter"];
+/** Identifiant d'un fournisseur : voir le registre PROVIDERS dans providers.ts. */
+export type ProviderId = string;
 
 export interface Settings {
   workspace: string | null;

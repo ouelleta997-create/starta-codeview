@@ -6,10 +6,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
-  DATA_DIR, PROVIDER_IDS, getSettings, patchSettings, rememberWorkspace, setSecret, getSecret, deleteSecret, maskSecret, sessionToken,
+  DATA_DIR, getSettings, patchSettings, rememberWorkspace, setSecret, getSecret, deleteSecret, maskSecret, sessionToken,
   listChats, loadChat, saveChat, deleteChat, newChat, type ProviderId, type SecretName,
 } from "./store.ts";
-import { PROVIDERS, baseUrl, listModels } from "./providers.ts";
+import { PROVIDERS, PROVIDER_IDS, baseUrl, listModels } from "./providers.ts";
 import * as n8n from "./n8n.ts";
 import { runAgent, resolveApproval, type AgentEvent } from "./agent.ts";
 import { runCommand, SHELL_NAME } from "./shell.ts";
@@ -145,13 +145,19 @@ async function pickFolder(): Promise<string | null> {
 // ───────────────────────── API ─────────────────────────
 
 const modelCache = new Map<string, { at: number; value: unknown }>();
+const SECRET_ROUTE = new RegExp(`^/api/secrets/(${[...PROVIDER_IDS, "n8n"].join("|")})$`);
+const TEST_ROUTE = new RegExp(`^/api/test/(${[...PROVIDER_IDS, "n8n"].join("|")})$`);
 
 function publicState() {
   const s = getSettings();
   const providers: Record<string, unknown> = {};
   for (const id of PROVIDER_IDS) {
     const key = getSecret(id);
-    providers[id] = { label: PROVIDERS[id].label, configured: !!key, masked: maskSecret(key), baseUrl: baseUrl(id), defaultBaseUrl: PROVIDERS[id].baseUrl, presets: PROVIDERS[id].presets ?? [] };
+    const d = PROVIDERS[id];
+    providers[id] = {
+      label: d.label, configured: !!key, masked: key === "none" ? "" : maskSecret(key), baseUrl: baseUrl(id), defaultBaseUrl: d.baseUrl, presets: d.presets ?? [],
+      keyUrl: d.keyUrl ?? "", keyHint: d.keyHint ?? "", keyless: !!d.keyless, custom: !!d.custom, anthropic: d.kind === "anthropic",
+    };
   }
   const nk = getSecret("n8n");
   return {
@@ -199,11 +205,13 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     return send(res, 200, publicState());
   }
 
-  if ((g = p.match(/^\/api\/secrets\/(zai|mistral|anthropic|openrouter|n8n)$/))) {
+  if ((g = p.match(SECRET_ROUTE))) {
     const name = g[1] as SecretName;
     if (m === "PUT") {
-      if (typeof body.value !== "string" || !body.value.trim()) throw httpError(400, "Valeur vide.");
-      setSecret(name, body.value.trim());
+      // Un serveur local (Ollama…) ou « autre » n'exige pas de clé : on enregistre alors un marqueur.
+      const optional = !!(PROVIDERS[name]?.keyless || PROVIDERS[name]?.custom);
+      if (typeof body.value !== "string" || (!body.value.trim() && !optional)) throw httpError(400, "Valeur vide.");
+      setSecret(name, body.value.trim() || "none");
       modelCache.clear();
     } else if (m === "DELETE") {
       deleteSecret(name);
@@ -231,14 +239,16 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     return send(res, 200, out);
   }
 
-  if ((g = p.match(/^\/api\/test\/(zai|mistral|anthropic|openrouter|n8n)$/)) && m === "POST") {
+  if ((g = p.match(TEST_ROUTE)) && m === "POST") {
     try {
       if (g[1] === "n8n") {
         const w = await n8n.listWorkflows();
         return send(res, 200, { ok: true, message: `Connecté — ${w.length} workflow${w.length > 1 ? "s" : ""}.` });
       }
       const models = await listModels(g[1] as ProviderId);
-      return send(res, 200, { ok: true, message: `Clé valide — ${models.length} modèles.` });
+      const d = PROVIDERS[g[1]];
+      const n = `${models.length} modèle${models.length > 1 ? "s" : ""}`;
+      return send(res, 200, { ok: true, message: d?.keyless ? `Connecté — ${n}.` : d?.publicModels ? `Adresse joignable — ${n}. Cette liste est publique : ta clé ne sera vérifiée qu'à ton premier message.` : `Clé valide — ${n}.` });
     } catch (e) {
       return send(res, 200, { ok: false, message: (e as Error).message });
     }

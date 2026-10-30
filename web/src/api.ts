@@ -1,8 +1,11 @@
 export interface VoiceInfo { installed: boolean; state: "off" | "loading" | "ready" | "error"; model: string; device: string; error: string }
 export interface Entry { name: string; dir: boolean; path: string; ignored: boolean }
-export interface ProviderState { label: string; configured: boolean; masked: string; baseUrl: string; defaultBaseUrl: string; presets: { label: string; baseUrl: string }[] }
-export type ProviderId = "zai" | "mistral" | "anthropic" | "openrouter";
-export const PROVIDER_ORDER: ProviderId[] = ["anthropic", "zai", "mistral", "openrouter"];
+export interface ProviderState {
+  label: string; configured: boolean; masked: string; baseUrl: string; defaultBaseUrl: string; presets: { label: string; baseUrl: string }[];
+  keyUrl: string; keyHint: string; keyless: boolean; custom: boolean; anthropic: boolean;
+}
+/** Identifiant d'un fournisseur (clé de `AppState.providers`, dans l'ordre d'affichage voulu par le serveur). */
+export type ProviderId = string;
 export interface AppState {
   version: string;
   settings: {

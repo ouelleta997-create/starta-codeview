@@ -1,7 +1,38 @@
 {
   "name": "starta-codeview",
   "version": "0.1.0",
-  "description": "Éditeur de code local avec agents IA (Z.ai, Mistral, Claude, OpenRouter), terminal et n8n.",
+  "description": "Local code editor where AI agents work for you: 4 parallel chats, 25+ providers (Claude, OpenAI, Gemini, Grok, DeepSeek, Ollama…), local voice dictation, terminal and n8n.",
+  "keywords": [
+    "ai",
+    "agent",
+    "code-editor",
+    "llm",
+    "claude",
+    "openai",
+    "gemini",
+    "grok",
+    "deepseek",
+    "ollama",
+    "n8n",
+    "whisper",
+    "local-first",
+    "byok"
+  ],
+  "author": "Starta Intelligence",
+  "license": "MIT",
+  "homepage": "https://github.com/ouelleta997-create/starta-codeview#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ouelleta997-create/starta-codeview.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ouelleta997-create/starta-codeview/issues"
+  },
+  "type": "module",
+  "private": false,
+  "engines": {
+    "node": ">=22.18"
+  },
   "scripts": {
     "start": "node server/index.ts",
     "dev": "concurrently -k -n srv,web \"node --watch server/index.ts --no-open\" \"vite --config web/vite.config.ts\"",
@@ -10,10 +41,6 @@
     "test": "node --test test/e2e.test.ts",
     "voice:install": "node scripts/install-voice.ts"
   },
-  "keywords": [],
-  "author": "",
-  "license": "MIT",
-  "type": "module",
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
@@ -38,9 +65,5 @@
     "react-dom": "^19.3.1",
     "typescript": "^7.0.2",
     "vite": "^8.3.5"
-  },
-  "private": false,
-  "engines": {
-    "node": ">=22.18"
   }
 }

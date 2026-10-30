@@ -24,13 +24,16 @@ const voiceCalls: { lang: string | null; bytes: number; type: string | undefined
 let cookie = "";
 const n8nCalls: { method: string; url: string; body?: any }[] = [];
 let script: (messages: any[]) => any = () => ({ text: "ok" });
+let lastRequest: { url?: string; auth?: string; body: any } | null = null;
 
-function sseChunks(res: http.ServerResponse, out: { text?: string; tool?: { name: string; args: object }[]; finish?: string }) {
+function sseChunks(res: http.ServerResponse, out: { text?: string; tool?: { name: string; args: object }[]; finish?: string; geminiStyle?: boolean }) {
   res.writeHead(200, { "Content-Type": "text/event-stream" });
   const send = (o: unknown) => res.write(`data: ${JSON.stringify(o)}\n\n`);
   if (out.text) for (const w of out.text.match(/.{1,6}/g) ?? []) send({ choices: [{ delta: { content: w } }] });
   (out.tool ?? []).forEach((t, i) => {
     const args = JSON.stringify(t.args);
+    // Style Gemini : appels entiers, tous à l'index 0, sans identifiant.
+    if (out.geminiStyle) return void send({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: t.name, arguments: args } }] } }] });
     send({ choices: [{ delta: { tool_calls: [{ index: i, id: `call_${i}`, function: { name: t.name, arguments: args.slice(0, 10) } }] } }] });
     send({ choices: [{ delta: { tool_calls: [{ index: i, function: { arguments: args.slice(10) } }] } }] });
   });
@@ -44,11 +47,23 @@ before(async () => {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      if (req.url?.startsWith("/v1/models")) {
+      if (req.url?.startsWith("/arr/models")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify([{ id: "meta/chat-1", type: "chat" }, { id: "meta/embed-1", type: "embedding" }, { id: "meta/code-1", type: "code" }]));
+      }
+      if (req.url?.startsWith("/gem/models")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ data: [{ id: "models/gemini-x" }, { id: "models/text-embedding-9" }, { id: "models/gemini-y" }] }));
+      }
+      if (req.url?.startsWith("/v1/models") || req.url?.startsWith("/ds/models") || req.url?.startsWith("/local/models")) {
         res.writeHead(200, { "Content-Type": "application/json" });
         return res.end(JSON.stringify({ data: [{ id: "mock-model" }] }));
       }
-      if (req.url?.startsWith("/v1/chat/completions")) return sseChunks(res, script(JSON.parse(body).messages));
+      if (req.url?.match(/^\/(v1|ds|local)\/chat\/completions/)) {
+        const parsed = JSON.parse(body);
+        lastRequest = { url: req.url, auth: req.headers.authorization, body: parsed };
+        return sseChunks(res, script(parsed.messages));
+      }
       if (req.url?.startsWith("/n8n/api/v1")) {
         n8nCalls.push({ method: req.method!, url: req.url, body: body ? JSON.parse(body) : undefined });
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -100,11 +115,11 @@ after(() => {
 const api = (p: string, init: RequestInit = {}) =>
   fetch(`http://127.0.0.1:${PORT}${p}`, { ...init, headers: { cookie, "Content-Type": "application/json", Origin: `http://127.0.0.1:${PORT}`, ...(init.headers ?? {}) } });
 
-function chat(text: string, approve?: (e: any) => boolean): Promise<any[]> {
+function chat(text: string, approve?: (e: any) => boolean, model: { provider: string; id: string } = { provider: "zai", id: "mock-model" }): Promise<any[]> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`, { headers: { cookie, Origin: `http://127.0.0.1:${PORT}` } });
     const events: any[] = [];
-    ws.on("open", () => ws.send(JSON.stringify({ type: "chat", text, model: { provider: "zai", id: "mock-model" } })));
+    ws.on("open", () => ws.send(JSON.stringify({ type: "chat", text, model })));
     ws.on("message", (raw) => {
       const m = JSON.parse(String(raw));
       if (m.type !== "chat.event") return;
@@ -283,4 +298,72 @@ test("réglages vocaux : modifiables, les inconnus ignorés", async () => {
   assert.equal(s.settings.voiceLang, "en");
   assert.ok(!("maxSteps" in s.settings) && !("bidon" in s.settings));
   await api("/api/settings", { method: "PUT", body: JSON.stringify({ voiceAutoSend: false, voiceLang: "fr" }) });
+});
+
+test("registre : 25+ fournisseurs, dont xAI, DeepSeek, Gemini, locaux et « autre »", async () => {
+  const st = await (await api("/api/state")).json();
+  const ids = Object.keys(st.providers);
+  assert.ok(ids.length >= 25);
+  for (const id of ["anthropic", "openai", "gemini", "xai", "deepseek", "groq", "ollama", "lmstudio", "custom"]) assert.ok(ids.includes(id), id);
+  assert.equal(ids[0], "anthropic");
+  assert.equal(st.providers.ollama.keyless, true);
+  assert.equal(st.providers.custom.custom, true);
+  assert.ok(st.providers.xai.keyUrl.startsWith("https://"));
+  assert.ok(ids.every((id) => st.providers[id].label && "baseUrl" in st.providers[id]));
+});
+
+test("DeepSeek : clé enregistrée, conversation, adresse de base remplaçable, décompte de jetons demandé", async () => {
+  await api("/api/settings", { method: "PUT", body: JSON.stringify({ baseUrls: { zai: `http://127.0.0.1:${mockPort}/v1`, deepseek: `http://127.0.0.1:${mockPort}/ds` } }) });
+  const s = await (await api("/api/secrets/deepseek", { method: "PUT", body: JSON.stringify({ value: "sk-ds-1234567890" }) })).json();
+  assert.equal(s.providers.deepseek.configured, true);
+  const t = await (await api("/api/test/deepseek", { method: "POST", body: "{}" })).json();
+  assert.equal(t.ok, true);
+  let turn = 0;
+  script = () => [{ tool: [{ name: "list_dir", args: { path: "." } }] }, { text: "ok deepseek" }][turn++];
+  const ev = await chat("salut", undefined, { provider: "deepseek", id: "deepseek-chat" });
+  assert.equal(ev.at(-1).reason, "end");
+  assert.equal(lastRequest!.auth, "Bearer sk-ds-1234567890");
+  assert.equal(lastRequest!.url, "/ds/chat/completions");
+  assert.deepEqual(lastRequest!.body.stream_options, { include_usage: true });
+});
+
+test("serveur local sans clé (Ollama) : activation sans clé, aucun en-tête Authorization", async () => {
+  await api("/api/settings", { method: "PUT", body: JSON.stringify({ baseUrls: { zai: `http://127.0.0.1:${mockPort}/v1`, deepseek: `http://127.0.0.1:${mockPort}/ds`, ollama: `http://127.0.0.1:${mockPort}/local` } }) });
+  const bad = await api("/api/secrets/xai", { method: "PUT", body: JSON.stringify({ value: "  " }) });
+  assert.equal(bad.status, 400);
+  const ok = await api("/api/secrets/ollama", { method: "PUT", body: JSON.stringify({ value: "" }) });
+  assert.equal(ok.status, 200);
+  const st = await ok.json();
+  assert.equal(st.providers.ollama.configured, true);
+  assert.equal(st.providers.ollama.masked, "");
+  script = () => ({ text: "ok local" });
+  const ev = await chat("salut", undefined, { provider: "ollama", id: "llama3" });
+  assert.equal(ev.at(-1).reason, "end");
+  assert.equal(lastRequest!.url, "/local/chat/completions");
+  assert.equal(lastRequest!.auth, undefined);
+});
+
+test("listes de modèles : tableau nu (Together), préfixe « models/ » (Gemini), bruit filtré", async () => {
+  await api("/api/settings", { method: "PUT", body: JSON.stringify({ baseUrls: { zai: `http://127.0.0.1:${mockPort}/v1`, deepseek: `http://127.0.0.1:${mockPort}/ds`, ollama: `http://127.0.0.1:${mockPort}/local`, together: `http://127.0.0.1:${mockPort}/arr`, gemini: `http://127.0.0.1:${mockPort}/gem` } }) });
+  await api("/api/secrets/together", { method: "PUT", body: JSON.stringify({ value: "tg-key-123456789" }) });
+  await api("/api/secrets/gemini", { method: "PUT", body: JSON.stringify({ value: "AIza-test-123456" }) });
+  const m = await (await api("/api/models")).json();
+  assert.deepEqual(m.together.models.map((x: any) => x.id), ["meta/chat-1", "meta/code-1"]);
+  assert.deepEqual(m.gemini.models.map((x: any) => x.id), ["gemini-x", "gemini-y"]);
+  assert.equal(m.together.live, true);
+});
+
+test("Gemini : appels d'outils parallèles tous numérotés 0 ne sont pas fusionnés", async () => {
+  let turn = 0;
+  script = () => [{ geminiStyle: true, tool: [{ name: "list_dir", args: { path: "." } }, { name: "read_file", args: { path: "a.txt" } }] }, { text: "fini" }][turn++];
+  const ev = await chat("deux outils", undefined, { provider: "zai", id: "mock-model" });
+  const starts = ev.filter((e) => e.type === "tool_start");
+  assert.deepEqual(starts.map((e) => e.name), ["list_dir", "read_file"]);
+  assert.deepEqual(starts[1].args, { path: "a.txt" });
+});
+
+test("fournisseur inconnu : erreur claire, pas de plantage", async () => {
+  const ev = await chat("salut", undefined, { provider: "n-existe-pas", id: "x" });
+  assert.match(ev.find((e) => e.type === "error").message, /Fournisseur inconnu/);
+  assert.equal(ev.at(-1).reason, "error");
 });

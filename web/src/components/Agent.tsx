@@ -4,7 +4,7 @@ import {
   FolderTree, FileText, FilePlus2, Pencil, TerminalSquare, Workflow, Sparkles, Bug, FlaskConical, BookOpen, Trash2, KeyRound, Mic,
 } from "lucide-react";
 import { useStore, onMicLevel, type Item } from "../store";
-import { PROVIDER_ORDER, type ProviderId } from "../api";
+import type { ProviderId } from "../api";
 import { renderMarkdown } from "../markdown";
 import { monaco, themeName, resolveLang } from "../monaco";
 import { Dropdown, FileIcon } from "./ui";
@@ -148,7 +148,7 @@ function ModelPicker({ index }: { index: number }) {
   const paneModel = useStore((s) => s.panes[index].model);
   const [q, setQ] = useState("");
   const cur = paneModel ?? app?.settings.model;
-  const configured = PROVIDER_ORDER.filter((p) => app?.providers[p].configured);
+  const configured = Object.keys(app?.providers ?? {}).filter((p) => app?.providers[p].configured);
   if (!configured.length)
     return <button className="pill warn" onClick={() => useStore.setState({ settings: "providers" })}><KeyRound />Ajouter une clé</button>;
   return (
@@ -171,7 +171,12 @@ function ModelPicker({ index }: { index: number }) {
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{m.id}</span>
                   </button>
                 ))}
-                {!f.length && <div className="hint" style={{ padding: "2px 9px" }}>Aucun modèle</div>}
+                {q.trim() && !list.some((m) => m.id === q.trim()) && (
+                  <button className="it" onClick={() => { useStore.getState().setPaneModel(index, p, q.trim()); close(); setQ(""); }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>Utiliser « {q.trim()} »</span>
+                  </button>
+                )}
+                {!f.length && !q.trim() && <div className="hint" style={{ padding: "2px 9px" }}>Aucun modèle — tape son nom ci-dessus</div>}
               </div>
             );
           })}
