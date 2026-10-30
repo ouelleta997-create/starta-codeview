@@ -1,3 +1,4 @@
+export interface VoiceInfo { installed: boolean; state: "off" | "loading" | "ready" | "error"; model: string; device: string; error: string }
 export interface Entry { name: string; dir: boolean; path: string; ignored: boolean }
 export interface ProviderState { label: string; configured: boolean; masked: string; baseUrl: string; defaultBaseUrl: string; presets: { label: string; baseUrl: string }[] }
 export type ProviderId = "zai" | "mistral" | "anthropic" | "openrouter";
@@ -6,10 +7,12 @@ export interface AppState {
   version: string;
   settings: {
     workspace: string | null; recents: string[]; approval: "auto" | "ask"; theme: "dark" | "light" | "system";
-    model: { provider: ProviderId; id: string } | null; baseUrls: Partial<Record<ProviderId, string>>; n8nUrl: string; maxSteps: number;
+    model: { provider: ProviderId; id: string } | null; baseUrls: Partial<Record<ProviderId, string>>; n8nUrl: string;
+    voiceModel: string; voiceLang: string; voiceAutoSend: boolean;
   };
   providers: Record<ProviderId, ProviderState>;
   n8n: { url: string; configured: boolean; masked: string };
+  voice: VoiceInfo;
   platform: string; shell: string; home: string; dataDir: string;
 }
 export interface ModelList { live: boolean; error?: string; models: { id: string; name?: string }[] }

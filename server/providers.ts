@@ -14,7 +14,9 @@ export type StreamEvent =
   | { type: "text"; delta: string }
   | { type: "thinking"; delta: string }
   | { type: "tool_calls"; calls: { id: string; name: string; args: Record<string, unknown> }[] }
-  | { type: "usage"; input: number; output: number };
+  | { type: "usage"; input: number; output: number }
+  /** Le modèle a atteint sa limite de sortie : la réponse est coupée en plein milieu. */
+  | { type: "truncated" };
 
 export const PROVIDERS: Record<ProviderId, { label: string; baseUrl: string; presets?: { label: string; baseUrl: string }[]; fallbackModels: string[] }> = {
   zai: {
@@ -174,6 +176,7 @@ async function* streamOpenAI(p: ProviderId, model: string, system: string, msgs:
   if (!res.ok) await failFrom(res, p);
 
   const acc = new Map<number, { id: string; name: string; args: string }>();
+  let truncated = false;
   for await (const ev of sse(res)) {
     if (ev.data === "[DONE]") break;
     let j: any;
@@ -184,6 +187,7 @@ async function* streamOpenAI(p: ProviderId, model: string, system: string, msgs:
     }
     if (j.error) throw new ProviderError(`${PROVIDERS[p].label} : ${j.error.message ?? JSON.stringify(j.error)}`);
     if (j.usage) yield { type: "usage", input: j.usage.prompt_tokens ?? 0, output: j.usage.completion_tokens ?? 0 };
+    if (j.choices?.[0]?.finish_reason === "length") truncated = true;
     const d = j.choices?.[0]?.delta;
     if (!d) continue;
     const think = d.reasoning_content ?? d.reasoning;
@@ -208,6 +212,7 @@ async function* streamOpenAI(p: ProviderId, model: string, system: string, msgs:
       .map(([, c]) => ({ id: c.id || `call_${crypto.randomBytes(6).toString("hex")}`, name: c.name, args: safeJson(c.args) }));
     yield { type: "tool_calls", calls };
   }
+  if (truncated) yield { type: "truncated" };
 }
 
 function toAnthropic(msgs: ChatMsg[]): unknown[] {
@@ -255,6 +260,7 @@ async function* streamAnthropic(model: string, system: string, msgs: ChatMsg[], 
   const blocks = new Map<number, { id: string; name: string; json: string }>();
   let inTok = 0;
   let outTok = 0;
+  let truncated = false;
   const calls: { id: string; name: string; args: Record<string, unknown> }[] = [];
   for await (const ev of sse(res)) {
     let j: any;
@@ -290,6 +296,7 @@ async function* streamAnthropic(model: string, system: string, msgs: ChatMsg[], 
       }
       case "message_delta":
         outTok = j.usage?.output_tokens ?? outTok;
+        if (j.delta?.stop_reason === "max_tokens") truncated = true;
         break;
       case "error":
         throw new ProviderError(`Claude : ${j.error?.message ?? "erreur de flux"}`);
@@ -297,6 +304,7 @@ async function* streamAnthropic(model: string, system: string, msgs: ChatMsg[], 
   }
   yield { type: "usage", input: inTok, output: outTok };
   if (calls.length) yield { type: "tool_calls", calls };
+  if (truncated) yield { type: "truncated" };
 }
 
 export function streamChat(p: ProviderId, model: string, system: string, msgs: ChatMsg[], tools: ToolDef[], signal: AbortSignal): AsyncGenerator<StreamEvent> {

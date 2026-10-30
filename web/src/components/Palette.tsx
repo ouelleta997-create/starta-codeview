@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Search, FolderOpen, Settings, SquareTerminal, PanelLeft, PanelRight, MessageSquarePlus, Sun, Moon, RefreshCw, Workflow, Command } from "lucide-react";
+import { Search, FolderOpen, Settings, SquareTerminal, PanelLeft, Mic, MessageSquarePlus, Sun, Moon, RefreshCw, Workflow, Command } from "lucide-react";
 import { useStore } from "../store";
 import { FileIcon } from "./ui";
 
@@ -35,10 +35,10 @@ export function Palette() {
     { id: "folder", label: "Ouvrir un dossier…", icon: FolderOpen, run: () => void s.pickFolder() },
     { id: "settings", label: "Réglages : fournisseurs et clés", icon: Settings, run: () => useStore.setState({ settings: "providers" }), hint: "Ctrl ," },
     { id: "n8n", label: "Réglages : connexion n8n", icon: Workflow, run: () => useStore.setState({ settings: "n8n" }) },
-    { id: "chat", label: "Nouvelle conversation avec l'agent", icon: MessageSquarePlus, run: () => { s.newChat(); useStore.setState((x) => ({ show: { ...x.show, agent: true } })); setTimeout(() => document.getElementById("composer")?.focus(), 30); }, hint: "Ctrl L" },
+    { id: "chat", label: "Nouvelle conversation avec l'agent", icon: MessageSquarePlus, run: () => { const i = useStore.getState().focused; s.newChat(i); setTimeout(() => document.getElementById(`composer-${i}`)?.focus(), 30); }, hint: "Ctrl L" },
     { id: "term", label: "Afficher / masquer le terminal", icon: SquareTerminal, run: () => s.toggle("term"), hint: "Ctrl J" },
-    { id: "side", label: "Afficher / masquer la barre latérale", icon: PanelLeft, run: () => s.toggle("sidebar"), hint: "Ctrl B" },
-    { id: "agent", label: "Afficher / masquer l'agent", icon: PanelRight, run: () => s.toggle("agent") },
+    { id: "side", label: "Afficher / masquer l'éditeur de code", icon: PanelLeft, run: () => s.toggle("code"), hint: "Ctrl B" },
+    { id: "voice", label: "Réglages : voix (dictée)", icon: Mic, run: () => useStore.setState({ settings: "voice" }) },
     { id: "theme", label: dark ? "Passer au thème clair" : "Passer au thème sombre", icon: dark ? Sun : Moon, run: () => void s.patchSettings({ theme: dark ? "light" : "dark" }) },
     { id: "wf", label: "Rafraîchir les workflows n8n", icon: RefreshCw, run: () => { useStore.setState({ sidebarTab: "n8n" }); void s.refreshWorkflows(); } },
   ], [dark]); // eslint-disable-line react-hooks/exhaustive-deps

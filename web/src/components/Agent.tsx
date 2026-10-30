@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUp, Square, Plus, History, Check, X, Loader2, Hourglass, ShieldAlert, AlertTriangle, ChevronDown, ChevronRight, Search as SearchIcon,
-  FolderTree, FileText, FilePlus2, Pencil, TerminalSquare, Workflow, Sparkles, Bug, FlaskConical, BookOpen, Trash2, Zap, ShieldCheck, KeyRound,
+  FolderTree, FileText, FilePlus2, Pencil, TerminalSquare, Workflow, Sparkles, Bug, FlaskConical, BookOpen, Trash2, KeyRound, Mic,
 } from "lucide-react";
-import { useStore, type Item } from "../store";
+import { useStore, onMicLevel, type Item } from "../store";
 import { PROVIDER_ORDER, type ProviderId } from "../api";
 import { renderMarkdown } from "../markdown";
 import { monaco, themeName, resolveLang } from "../monaco";
@@ -140,19 +140,20 @@ function Message({ it }: { it: Item }) {
     case "error": return <div className="err"><AlertTriangle /><div>{it.text}</div></div>;
   }
 }
-
 // ───────────────────────── Sélecteur de modèle ─────────────────────────
 
-function ModelPicker() {
-  const { app, models, setModel } = useStore();
+function ModelPicker({ index }: { index: number }) {
+  const app = useStore((s) => s.app);
+  const models = useStore((s) => s.models);
+  const paneModel = useStore((s) => s.panes[index].model);
   const [q, setQ] = useState("");
-  const cur = app?.settings.model;
+  const cur = paneModel ?? app?.settings.model;
   const configured = PROVIDER_ORDER.filter((p) => app?.providers[p].configured);
   if (!configured.length)
     return <button className="pill warn" onClick={() => useStore.setState({ settings: "providers" })}><KeyRound />Ajouter une clé</button>;
   return (
     <Dropdown up trigger={(_o, t) => (
-      <button className="pill" onClick={t} title="Choisir le modèle">
+      <button className="pill" onClick={t} title="Choisir le modèle de cette conversation">
         <Sparkles /><span>{cur ? `${cur.id}` : "Choisir un modèle"}</span><ChevronDown />
       </button>
     )}>
@@ -166,7 +167,7 @@ function ModelPicker() {
               <div key={p}>
                 <div className="grp">{app!.providers[p].label}{models[p] && !models[p].live ? " · liste de secours" : ""}</div>
                 {f.map((m) => (
-                  <button key={m.id} className={`it ${cur?.provider === p && cur.id === m.id ? "cur" : ""}`} onClick={() => { void setModel(p as ProviderId, m.id); close(); setQ(""); }}>
+                  <button key={m.id} className={`it ${cur?.provider === p && cur.id === m.id ? "cur" : ""}`} onClick={() => { useStore.getState().setPaneModel(index, p as ProviderId, m.id); close(); setQ(""); }}>
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{m.id}</span>
                   </button>
                 ))}
@@ -180,15 +181,46 @@ function ModelPicker() {
   );
 }
 
+// ───────────────────────── Micro ─────────────────────────
+
+function MicButton({ index }: { index: number }) {
+  const voice = useStore((s) => s.panes[index].voice);
+  const info = useStore((s) => s.app?.voice);
+  const ref = useRef<HTMLButtonElement>(null);
+  useEffect(() => onMicLevel((pane, level) => { if (pane === index) ref.current?.style.setProperty("--lvl", level.toFixed(2)); }), [index]);
+  const off = !info?.installed;
+  const title = voice === "rec" ? "Terminer la dictée (elle s'arrête aussi toute seule après un silence)"
+    : voice === "busy" ? "Transcription en cours…"
+    : off ? "Dictée non installée — lance « npm run voice:install »"
+    : info?.state === "loading" ? "Parler à cette conversation (le moteur vocal finit de se charger)"
+    : info?.state === "error" ? `Moteur vocal en erreur : ${info.error}`
+    : "Parler à cette conversation";
+  return (
+    <button ref={ref} className={`mic ${voice} ${off || info?.state === "error" ? "off" : ""}`} onClick={() => void useStore.getState().toggleMic(index)} title={title} aria-label={`Dictée vocale — conversation ${index + 1}`}>
+      {voice === "busy" ? <Loader2 className="spin" /> : <Mic />}
+    </button>
+  );
+}
+
 // ───────────────────────── Zone de saisie ─────────────────────────
 
-function Composer() {
-  const { draft, running, sendChat, stop, app, tabs, active, includeActive, allFiles, loadAllFiles } = useStore();
+function Composer({ index }: { index: number }) {
+  const draft = useStore((s) => s.panes[index].draft);
+  const running = useStore((s) => s.panes[index].running);
+  const sendWhenIdle = useStore((s) => s.panes[index].sendWhenIdle);
+  const app = useStore((s) => s.app);
+  const paneModel = useStore((s) => s.panes[index].model);
+  const code = useStore((s) => s.show.code);
+  const tabs = useStore((s) => s.tabs);
+  const active = useStore((s) => s.active);
+  const includeActive = useStore((s) => s.includeActive);
+  const allFiles = useStore((s) => s.allFiles);
+  const { sendChat, stop, setDraft, loadAllFiles } = useStore.getState();
   const ta = useRef<HTMLTextAreaElement>(null);
   const [mention, setMention] = useState<{ start: number; q: string } | null>(null);
   const [hl, setHl] = useState(0);
-  const activeTab = tabs.find((t) => t.id === active && t.kind === "file");
-  const hasModel = !!app?.settings.model;
+  const activeTab = code ? tabs.find((t) => t.id === active && t.kind === "file") : undefined;
+  const hasModel = !!(paneModel ?? app?.settings.model);
 
   useEffect(() => {
     const el = ta.current;
@@ -204,7 +236,7 @@ function Composer() {
   }, [mention, allFiles]);
 
   const onChange = (v: string, caret: number) => {
-    useStore.setState({ draft: v });
+    setDraft(index, v);
     const m = /(?:^|\s)@([^\s@]*)$/.exec(v.slice(0, caret));
     if (m) { if (!allFiles.length) void loadAllFiles(); setMention({ start: caret - m[1].length - 1, q: m[1] }); setHl(0); }
     else setMention(null);
@@ -212,12 +244,11 @@ function Composer() {
   const pick = (f: string) => {
     if (!mention) return;
     const caret = ta.current!.selectionStart;
-    const next = `${draft.slice(0, mention.start)}@${f} ${draft.slice(caret)}`;
-    useStore.setState({ draft: next });
+    setDraft(index, `${draft.slice(0, mention.start)}@${f} ${draft.slice(caret)}`);
     setMention(null);
     setTimeout(() => { const p = mention.start + f.length + 2; ta.current?.setSelectionRange(p, p); ta.current?.focus(); }, 0);
   };
-  const submit = () => { if (draft.trim() && hasModel && !running) { setMention(null); sendChat(draft.trim()); } };
+  const submit = () => { if (draft.trim() && hasModel && !running) { setMention(null); sendChat(index, draft.trim()); } };
 
   return (
     <div className="composer">
@@ -230,12 +261,13 @@ function Composer() {
           ))}
         </div>
       )}
+      {sendWhenIdle && <div className="queued"><Hourglass />Partira dès que l'agent aura fini</div>}
       <textarea
-        id="composer"
+        id={`composer-${index}`}
         ref={ta}
         rows={1}
         value={draft}
-        placeholder={hasModel ? "Demande, modifie, exécute…   @ pour joindre un fichier" : "Choisis un modèle pour commencer"}
+        placeholder={hasModel ? "Écris, ou dicte avec le micro" : "Choisis un modèle pour commencer"}
         onChange={(e) => onChange(e.target.value, e.target.selectionStart)}
         onKeyDown={(e) => {
           if (mention && matches.length) {
@@ -253,23 +285,19 @@ function Composer() {
             <FileIcon name={activeTab.title} /><span>{activeTab.title}</span>{includeActive ? <Check /> : null}
           </button>
         )}
-        <ModelPicker />
-        <button
-          className={`pill ${app?.settings.approval === "ask" ? "" : "on"}`}
-          onClick={() => void useStore.getState().patchSettings({ approval: app?.settings.approval === "ask" ? "auto" : "ask" })}
-          title={app?.settings.approval === "ask" ? "Prudent : demande avant chaque écriture et commande" : "Autonome : agit sans demander (confirmation seulement pour le dangereux)"}
-        >
-          {app?.settings.approval === "ask" ? <ShieldCheck /> : <Zap />}<span>{app?.settings.approval === "ask" ? "Prudent" : "Autonome"}</span>
-        </button>
-        {running
-          ? <button className="send stop" onClick={stop} title="Arrêter"><Square fill="currentColor" /></button>
-          : <button className="send" disabled={!draft.trim() || !hasModel} onClick={submit} title="Envoyer (Entrée)"><ArrowUp /></button>}
+        <ModelPicker index={index} />
+        <div className="composer-actions">
+          <MicButton index={index} />
+          {running
+            ? <button className="send stop" onClick={() => stop(index)} title="Arrêter"><Square fill="currentColor" /></button>
+            : <button className="send" disabled={!draft.trim() || !hasModel} onClick={submit} title="Envoyer (Entrée)"><ArrowUp /></button>}
+        </div>
       </div>
     </div>
   );
 }
 
-// ───────────────────────── Panneau ─────────────────────────
+// ───────────────────────── Fenêtre de conversation ─────────────────────────
 
 const SUGGESTIONS = [
   { icon: BookOpen, text: "Explique-moi l'architecture de ce projet" },
@@ -277,8 +305,11 @@ const SUGGESTIONS = [
   { icon: FlaskConical, text: "Lance les tests et corrige ce qui échoue" },
 ];
 
-export function AgentPanel() {
-  const { items, running, chatTitle, chats, newChat, loadChat, app } = useStore();
+export function ChatPane({ index }: { index: number }) {
+  const pane = useStore((s) => s.panes[index]);
+  const chats = useStore((s) => s.chats);
+  const app = useStore((s) => s.app);
+  const { items, running, title } = pane;
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const anyKey = !!app && Object.values(app.providers).some((p) => p.configured);
@@ -289,17 +320,18 @@ export function AgentPanel() {
   }, [items]);
 
   return (
-    <>
+    <section className="pane" onFocusCapture={() => useStore.getState().focused !== index && useStore.setState({ focused: index })} aria-label={`Conversation ${index + 1}`}>
       <div className="agent-head">
-        <span className="ttl">{chatTitle}</span>
-        <button className="icon-btn" title="Nouvelle conversation" onClick={newChat}><Plus /></button>
+        <span className={`num ${running ? "busy" : ""}`} title={running ? "L'agent travaille" : `Conversation ${index + 1}`}>{index + 1}</span>
+        <span className="ttl" title={title}>{title}</span>
+        <button className="icon-btn" title="Nouvelle conversation" onClick={() => useStore.getState().newChat(index)}><Plus /></button>
         <Dropdown align="right" trigger={(_o, t) => <button className="icon-btn" title="Historique" onClick={() => { void useStore.getState().refreshChats(); t(); }}><History /></button>}>
           {(close) => (
             <>
               <div className="grp">Conversations récentes</div>
               {chats.length === 0 && <div className="hint" style={{ padding: "2px 9px 6px" }}>Aucune pour l'instant.</div>}
               {chats.slice(0, 30).map((c) => (
-                <div key={c.id} className="it" style={{ cursor: "pointer" }} onClick={() => { close(); void loadChat(c.id); }}>
+                <div key={c.id} className="it" style={{ cursor: "pointer" }} onClick={() => { close(); void useStore.getState().loadChat(index, c.id); }}>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{c.title}</span>
                   <button className="icon-btn sm" title="Supprimer" onClick={async (e) => { e.stopPropagation(); await fetch(`/api/chats/${c.id}`, { method: "DELETE" }); void useStore.getState().refreshChats(); }}><Trash2 /></button>
                 </div>
@@ -318,8 +350,8 @@ export function AgentPanel() {
                 <br /><button className="btn primary" onClick={() => useStore.setState({ settings: "providers" })}><KeyRound />Connecter une clé</button></div>
             )}
             <div className="chips">
-              {SUGGESTIONS.map((s) => <button key={s.text} className="chip" onClick={() => { useStore.setState({ draft: s.text }); document.getElementById("composer")?.focus(); }}><s.icon />{s.text}</button>)}
-              {app?.n8n.configured && <button className="chip" onClick={() => { useStore.setState({ draft: "Crée un workflow n8n qui " }); document.getElementById("composer")?.focus(); }}><Workflow />Crée un workflow n8n qui…</button>}
+              {SUGGESTIONS.map((s) => <button key={s.text} className="chip" onClick={() => { useStore.getState().setDraft(index, s.text); document.getElementById(`composer-${index}`)?.focus(); }}><s.icon />{s.text}</button>)}
+              {app?.n8n.configured && <button className="chip" onClick={() => { useStore.getState().setDraft(index, "Crée un workflow n8n qui "); document.getElementById(`composer-${index}`)?.focus(); }}><Workflow />Crée un workflow n8n qui…</button>}
             </div>
           </div>
         ) : items.map((it, i) => <Message key={i} it={it} />)}
@@ -327,7 +359,7 @@ export function AgentPanel() {
           <div className="hint" style={{ display: "flex", gap: 8, alignItems: "center", margin: 0 }}><Loader2 size={13} className="spin" />Réflexion…</div>
         )}
       </div>
-      <Composer />
-    </>
+      <Composer index={index} />
+    </section>
   );
 }

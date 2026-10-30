@@ -14,6 +14,7 @@ import * as n8n from "./n8n.ts";
 import { runAgent, resolveApproval, type AgentEvent } from "./agent.ts";
 import { runCommand, SHELL_NAME } from "./shell.ts";
 import { IGNORED_DIRS, iterFiles, insideWorkspace } from "./tools.ts";
+import { VoiceError, refreshVoice, restartVoice, startVoice, transcribe, voiceSummary } from "./voice.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIST = path.join(HERE, "..", "web", "dist");
@@ -35,15 +36,19 @@ function send(res: http.ServerResponse, status: number, body: unknown, headers: 
   res.end(isStr ? body : JSON.stringify(body));
 }
 
-async function readBody(req: http.IncomingMessage, limit = 25 * 1024 * 1024): Promise<any> {
+async function readRaw(req: http.IncomingMessage, limit = 25 * 1024 * 1024): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let n = 0;
   for await (const c of req) {
     n += (c as Buffer).length;
-    if (n > limit) throw new Error("Requête trop volumineuse");
+    if (n > limit) throw httpError(413, "Requête trop volumineuse");
     chunks.push(c as Buffer);
   }
-  const t = Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
+}
+
+async function readBody(req: http.IncomingMessage, limit = 25 * 1024 * 1024): Promise<any> {
+  const t = (await readRaw(req, limit)).toString("utf8");
   return t ? JSON.parse(t) : {};
 }
 
@@ -154,6 +159,7 @@ function publicState() {
     settings: s,
     providers,
     n8n: { url: s.n8nUrl, configured: !!(s.n8nUrl && nk), masked: maskSecret(nk) },
+    voice: voiceSummary(),
     platform: process.platform,
     shell: SHELL_NAME,
     home: os.homedir(),
@@ -164,16 +170,31 @@ function publicState() {
 async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
   const p = url.pathname;
   const m = req.method ?? "GET";
+
+  // Dictée : le corps est de l'audio brut, pas du JSON.
+  if (p === "/api/voice/transcribe" && m === "POST") {
+    try {
+      const audio = await readRaw(req);
+      return send(res, 200, await transcribe(audio, url.searchParams.get("lang") || getSettings().voiceLang));
+    } catch (e) {
+      if (e instanceof VoiceError) throw httpError(e.status, e.message);
+      throw e;
+    }
+  }
+
   const body = m === "GET" || m === "DELETE" ? {} : await readBody(req);
   let g: RegExpMatchArray | null;
 
   if (p === "/api/state" && m === "GET") return send(res, 200, publicState());
+  if (p === "/api/voice/status" && m === "GET") return send(res, 200, await refreshVoice());
 
   if (p === "/api/settings" && m === "PUT") {
-    const allowed = ["approval", "theme", "model", "baseUrls", "n8nUrl", "maxSteps"] as const;
+    const allowed = ["approval", "theme", "model", "baseUrls", "n8nUrl", "voiceModel", "voiceLang", "voiceAutoSend"] as const;
     const patch: Record<string, unknown> = {};
     for (const k of allowed) if (k in body) patch[k] = body[k];
+    const modelBefore = getSettings().voiceModel;
     patchSettings(patch);
+    if (getSettings().voiceModel !== modelBefore) void restartVoice();
     modelCache.clear();
     return send(res, 200, publicState());
   }
@@ -501,15 +522,17 @@ async function main() {
     if (r.status !== 0) { console.error("La compilation a échoué — lance « npm install » puis « npm run build »."); process.exit(1); }
   }
   const noOpen = args.includes("--no-open") || process.env.CODEVIEW_NO_OPEN === "1";
+  const page = args.find((a) => a.startsWith("--page="))?.slice(7) ?? ""; // ex. --page=settings/n8n
   if (await alreadyRunning(START_PORT)) {
-    const url = `http://127.0.0.1:${START_PORT}/?t=${TOKEN}`;
+    const url = `http://127.0.0.1:${START_PORT}/?t=${TOKEN}${page ? `#${page}` : ""}`;
     console.log(`Starta CodeView tourne déjà — ouverture d'une fenêtre : http://127.0.0.1:${START_PORT}/`);
     if (!noOpen) openWindow(url);
     return;
   }
   const port = await listen(START_PORT);
   startWatcher();
-  const url = `http://127.0.0.1:${port}/?t=${TOKEN}`;
+  void startVoice(); // charge Whisper en fond pour que le premier micro réponde tout de suite (sans effet si la voix n'est pas installée)
+  const url = `http://127.0.0.1:${port}/?t=${TOKEN}${page ? `#${page}` : ""}`;
   console.log(`\n  Starta CodeView ${VERSION}\n  → ${url}\n  Données : ${DATA_DIR}\n  Ctrl+C pour arrêter.\n`);
   if (!noOpen) openWindow(url);
 }

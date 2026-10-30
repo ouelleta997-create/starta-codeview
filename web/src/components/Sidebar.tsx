@@ -136,7 +136,7 @@ function N8nPanel() {
     if (on && !confirm("Activer ce workflow ? Il se déclenchera pour de vrai.")) return;
     try { await api("POST", `/api/n8n/workflows/${id}/${on ? "activate" : "deactivate"}`); await refreshWorkflows(); } catch (e) { say((e as Error).message); }
   };
-  const ask = () => { useStore.setState({ draft: "Crée un workflow n8n qui ", show: { ...useStore.getState().show, agent: true } }); setTimeout(() => document.getElementById("composer")?.focus(), 30); };
+  const ask = () => { const i = useStore.getState().focused; useStore.getState().setDraft(i, "Crée un workflow n8n qui "); setTimeout(() => document.getElementById(`composer-${i}`)?.focus(), 30); };
 
   return (
     <>

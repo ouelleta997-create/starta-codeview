@@ -17,7 +17,7 @@ export type AgentEvent =
   | { type: "usage"; input: number; output: number }
   | { type: "title"; title: string }
   | { type: "error"; message: string }
-  | { type: "done"; reason: "end" | "stopped" | "max_steps" | "error" };
+  | { type: "done"; reason: "end" | "stopped" | "loop" | "error" };
 
 export interface RunInput {
   chat: Chat;
@@ -120,6 +120,12 @@ function compact(msgs: ChatMsg[]): ChatMsg[] {
 
 // ───────────────────────── Boucle d'agent ─────────────────────────
 
+// Pas de plafond d'étapes : l'agent travaille jusqu'au bout, même si l'utilisateur est parti.
+// Deux filets seulement, pour ne pas brûler de jetons dans le vide.
+const MAX_REPEATS = 10; // même appel d'outil, mêmes arguments, de suite
+const MAX_RESUMES = 6; // reprises automatiques d'une réponse coupée par la limite de sortie du modèle
+const RESUME_PROMPT = "Ta réponse a été coupée. Reprends exactement où tu t'es arrêté, sans répéter ce qui est déjà écrit.";
+
 export async function runAgent(inp: RunInput): Promise<void> {
   const { chat, signal, emit } = inp;
   const workspace = chat.workspace ?? getSettings().workspace;
@@ -142,16 +148,15 @@ export async function runAgent(inp: RunInput): Promise<void> {
   const tools: ToolDef[] = [...FILE_TOOLS, ...(n8nConfigured() ? N8N_TOOLS : [])];
   const system = systemPrompt(workspace);
   const myApprovals = new Set<string>();
-  let reason: "end" | "stopped" | "max_steps" | "error" = "end";
+  let reason: "end" | "stopped" | "loop" | "error" = "end";
+  let lastSig = "";
+  let repeats = 0;
+  let resumes = 0;
 
   try {
-    for (let step = 0; ; step++) {
-      if (step >= getSettings().maxSteps) {
-        reason = "max_steps";
-        emit({ type: "error", message: `Limite de ${getSettings().maxSteps} étapes atteinte. Écris « continue » pour reprendre.` });
-        break;
-      }
+    for (;;) {
       let text = "";
+      let truncated = false;
       let calls: { id: string; name: string; args: Record<string, unknown> }[] = [];
       for await (const ev of streamChat(inp.model.provider, inp.model.id, system, compact(chat.messages), tools, signal)) {
         if (ev.type === "text") {
@@ -160,12 +165,29 @@ export async function runAgent(inp: RunInput): Promise<void> {
         } else if (ev.type === "thinking") emit(ev);
         else if (ev.type === "usage") emit(ev);
         else if (ev.type === "tool_calls") calls = ev.calls;
+        else if (ev.type === "truncated") truncated = true;
       }
       const assistant: ChatMsg = { role: "assistant", content: text };
       if (calls.length) assistant.toolCalls = calls;
       chat.messages.push(assistant);
       saveChat(chat);
-      if (!calls.length) break;
+      if (!calls.length) {
+        if (!truncated || resumes >= MAX_RESUMES || signal.aborted) break;
+        resumes++;
+        chat.messages.push({ role: "user", content: RESUME_PROMPT, auto: true });
+        saveChat(chat);
+        continue;
+      }
+      resumes = 0;
+
+      const sig = calls.map((c) => `${c.name}:${JSON.stringify(c.args)}`).join("|");
+      repeats = sig === lastSig ? repeats + 1 : 0;
+      lastSig = sig;
+      if (repeats >= MAX_REPEATS - 1) {
+        reason = "loop";
+        emit({ type: "error", message: `Boucle détectée : l'agent a répété ${MAX_REPEATS} fois la même action. Arrêt automatique — reformule ou change d'approche.` });
+        break;
+      }
 
       for (const call of calls) {
         emit({ type: "tool_start", id: call.id, name: call.name, args: call.args });

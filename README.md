@@ -2,13 +2,15 @@
 
 **A fast, local code editor where AI agents do the work — with your own API keys.**
 
-Editor + terminal + agent chat in one clean window, inspired by Zed and Cursor. Bring your own key for **Claude**, **Z.ai (GLM)**, **Mistral** or **OpenRouter**. Agents read and edit your files, run commands in your local terminal, and can build and modify **n8n** workflows straight from the chat.
+**Four agent chats side by side** (4 × 1 columns, each with its own conversation and model) in one clean window, inspired by Zed and Cursor. The code editor and terminal are one click away if you want them. Bring your own key for **Claude**, **Z.ai (GLM)**, **Mistral** or **OpenRouter**. Agents read and edit your files, run commands in your local terminal, and can build and modify **n8n** workflows straight from the chat.
 
 *Français : [README.fr.md](README.fr.md)*
 
 - **No account, no cloud, no telemetry.** Keys and conversations stay on your machine (`~/.starta-codeview`). The only network calls are to the AI provider you picked and to your n8n instance.
 - **Four providers, nothing else.** Claude, Z.ai (standard API and GLM Coding Plan), Mistral, OpenRouter. Models are listed live from each provider.
 - **Real agents.** Tools: list / read / write / edit files, regex search, **run shell commands** (PowerShell on Windows, bash elsewhere). Edits show as diffs; commands stream into the terminal panel.
+- **Talk instead of typing.** Each chat has its own microphone button. Dictation runs **locally** (Whisper behind a small FastAPI server): no audio leaves your machine. See [Voice](#voice-dictation).
+- **Walk away.** No step cap, no "say continue" prompt: an agent works until it is done (it only stops if it repeats the exact same action 10 times in a row).
 - **n8n built in.** List, open, edit and save workflows from the sidebar — or just ask: *"Create a workflow that posts new Stripe payments to Slack"*. The agent can list executions and read failures to debug.
 - **Small.** ~4 000 lines of TypeScript. One Node server (single dependency: `ws`), one React page. No Electron, no native modules.
 
@@ -27,13 +29,14 @@ A window opens (Chrome/Edge "app" mode, separate profile). Then:
 
 1. **⚙ Settings → Providers** — paste a key for any provider.
 2. **Open a folder** (title bar).
-3. Press **Ctrl+L** and tell the agent what to do.
+3. Press **Ctrl+1…4** (or click a chat) and tell the agent what to do — or click its microphone and just say it.
+4. Optional: `npm run voice:install` (or double-click `Installer-voix.bat`) to enable dictation.
 
 On Windows you can also double-click `Lancer-CodeView.bat`.
 
 ## Autonomy and safety
 
-Settings → Agent lets you choose:
+Settings → Agent lets you choose (there is no step limit in either mode):
 
 | Mode | Behaviour |
 |---|---|
@@ -47,11 +50,22 @@ The server listens on `127.0.0.1` only, requires a per-install token (cookie) an
 | | |
 |---|---|
 | `Ctrl+P` | Open file · `Ctrl+Shift+P` commands |
-| `Ctrl+L` | Focus the agent |
-| `Ctrl+J` | Terminal |
-| `Ctrl+B` | Sidebar |
+| `Ctrl+1` … `Ctrl+4` | Focus chat 1 … 4 (`Ctrl+L`: the chat you used last) |
+| `Ctrl+B` | Show / hide the code editor (sidebar + editor) |
+| `Ctrl+J` | Terminal (inside the code view) |
 | `Ctrl+S` | Save (files, and n8n workflows) |
 | `@file` in chat | Attach a file to your message |
+
+## Voice dictation
+
+Each chat has a microphone button next to *Send*. Click it, speak, and it stops by itself after ~2 s of silence (or click again). The text lands in that chat's box; with **Auto-send** (title bar) it goes straight to the agent — and if the agent is busy, it is sent the moment it finishes. One microphone at a time.
+
+```bash
+npm run voice:install                       # Python venv + FastAPI + faster-whisper (≈ 480 MB model, once)
+npm run voice:install -- --model medium     # a bigger, more accurate model
+```
+
+Needs Python 3.9+. Everything lives in `~/.starta-codeview` (`voice-venv`, `voice-models`; delete them to uninstall). CodeView starts `voice/server.py` itself and talks to it on a random `127.0.0.1` port with a per-run token. Model, language and auto-send: **Settings → Voice**. CPU is fine (`small` ≈ 2 s per sentence); an NVIDIA GPU is used automatically when present. To run the engine yourself: `CODEVIEW_VOICE_URL=http://127.0.0.1:5758 CODEVIEW_VOICE_TOKEN=… npm start`.
 
 Put an `AGENTS.md` (or `CLAUDE.md`, or `.codeview/rules.md`) in your project: the agent reads it at the start of every conversation.
 
@@ -64,7 +78,7 @@ npm test           # end-to-end, against a mock provider and a mock n8n — no k
 node scripts/mock-provider.ts   # fake OpenAI-compatible provider to try the UI for free
 ```
 
-Layout: `server/` (HTTP + WebSocket, agent loop, tools, providers, n8n client) · `web/` (Vite + React, Monaco, xterm.js) · `test/`.
+Layout: `server/` (HTTP + WebSocket, agent loop, tools, providers, n8n client, voice supervisor) · `web/` (Vite + React, Monaco, xterm.js) · `voice/` (FastAPI + Whisper) · `test/`.
 
 ## Known limits (v0.1)
 

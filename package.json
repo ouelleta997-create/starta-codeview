@@ -7,7 +7,8 @@
     "dev": "concurrently -k -n srv,web \"node --watch server/index.ts --no-open\" \"vite --config web/vite.config.ts\"",
     "build": "vite build --config web/vite.config.ts",
     "typecheck": "tsc -p server/tsconfig.json && tsc -p web/tsconfig.json",
-    "test": "node --test test/e2e.test.ts"
+    "test": "node --test test/e2e.test.ts",
+    "voice:install": "node scripts/install-voice.ts"
   },
   "keywords": [],
   "author": "",

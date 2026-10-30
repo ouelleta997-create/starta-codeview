@@ -160,8 +160,17 @@ kbd { font: 11px var(--font); background: var(--bg3); border: 1px solid var(--li
 .xterm-host { flex: 1; min-height: 0; padding: 0 0 4px 14px; }
 .xterm .xterm-viewport { background: transparent !important; }
 
+/* ───── Quatre conversations côte à côte ───── */
+.panes { flex: 1; min-width: 0; display: flex; overflow-x: auto; background: var(--bg0); }
+.pane { flex: 1 1 0; min-width: 300px; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); }
+.pane:first-child { border-left: 0; }
+.num { width: 20px; height: 20px; border-radius: 50%; flex: none; display: grid; place-items: center; margin-right: 8px; font-size: 11px; font-weight: 700; background: var(--bg3); color: var(--text2); }
+.pane:focus-within .num { background: var(--accent-soft); color: var(--accent); }
+.num.busy { background: var(--accent); color: var(--accent-fg); animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.45; } }
+.titlebar .sp { flex: 1; }
+
 /* ───── Agent ───── */
-.agent { background: var(--bg0); border-left: 1px solid var(--line); }
 .agent-head { display: flex; align-items: center; gap: 4px; padding: 0 8px 0 14px; height: 38px; flex: none; border-bottom: 1px solid var(--line); }
 .agent-head .ttl { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat > * { flex: none; }
@@ -234,6 +243,18 @@ kbd { font: 11px var(--font); background: var(--bg3); border: 1px solid var(--li
 .send { width: 28px; height: 28px; border-radius: 8px; background: var(--accent); color: var(--accent-fg); display: grid; place-items: center; margin-left: auto; }
 .send:disabled { background: var(--bg3); color: var(--text3); cursor: default; } .send svg { width: 15px; height: 15px; }
 .send.stop { background: var(--text); color: var(--bg1); }
+.composer-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.composer-actions .send { margin-left: 0; }
+.queued { display: flex; align-items: center; gap: 6px; padding: 6px 12px 0; color: var(--warn); font-size: 11.5px; } .queued svg { width: 12px; height: 12px; }
+
+/* Bouton micro : un par conversation */
+.mic { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; flex: none; color: var(--text2); border: 1px solid var(--line); --lvl: 0; }
+.mic svg { width: 15px; height: 15px; }
+.mic:hover { background: var(--bg3); color: var(--text); }
+.mic.off { opacity: 0.45; }
+.mic.busy { color: var(--accent); cursor: default; }
+.mic.rec { background: var(--danger); border-color: transparent; color: #fff; box-shadow: 0 0 0 calc(2px + var(--lvl) * 9px) color-mix(in srgb, var(--danger) 32%, transparent); transition: box-shadow 0.08s linear; }
+.pill.auto-send { border: 1px solid var(--line); } .pill.auto-send.on { border-color: color-mix(in srgb, var(--accent) 50%, transparent); background: var(--accent-soft); }
 .ctxbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 7px 10px 0; } .ctxbar:empty { display: none; }
 .ctxtag { display: inline-flex; align-items: center; gap: 5px; background: var(--bg3); border-radius: 5px; padding: 1px 4px 1px 7px; font-size: 11px; color: var(--text2); }
 .ctxtag button { display: grid; place-items: center; color: var(--text3); } .ctxtag button:hover { color: var(--text); } .ctxtag svg { width: 11px; height: 11px; }

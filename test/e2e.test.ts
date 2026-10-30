@@ -17,11 +17,15 @@ const PORT = 5900 + Math.floor(Math.random() * 90);
 let server: ChildProcess;
 let mock: http.Server;
 let mockPort = 0;
+let voice: http.Server; // faux moteur vocal (FastAPI) : vérifie le jeton et renvoie un texte fixe
+let voicePort = 0;
+const VOICE_TOKEN = "test-voice-token";
+const voiceCalls: { lang: string | null; bytes: number; type: string | undefined }[] = [];
 let cookie = "";
 const n8nCalls: { method: string; url: string; body?: any }[] = [];
 let script: (messages: any[]) => any = () => ({ text: "ok" });
 
-function sseChunks(res: http.ServerResponse, out: { text?: string; tool?: { name: string; args: object }[] }) {
+function sseChunks(res: http.ServerResponse, out: { text?: string; tool?: { name: string; args: object }[]; finish?: string }) {
   res.writeHead(200, { "Content-Type": "text/event-stream" });
   const send = (o: unknown) => res.write(`data: ${JSON.stringify(o)}\n\n`);
   if (out.text) for (const w of out.text.match(/.{1,6}/g) ?? []) send({ choices: [{ delta: { content: w } }] });
@@ -30,7 +34,7 @@ function sseChunks(res: http.ServerResponse, out: { text?: string; tool?: { name
     send({ choices: [{ delta: { tool_calls: [{ index: i, id: `call_${i}`, function: { name: t.name, arguments: args.slice(0, 10) } }] } }] });
     send({ choices: [{ delta: { tool_calls: [{ index: i, function: { arguments: args.slice(10) } }] } }] });
   });
-  send({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
+  send({ choices: [{ delta: {}, finish_reason: out.finish ?? "stop" }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
   res.write("data: [DONE]\n\n");
   res.end();
 }
@@ -57,8 +61,26 @@ before(async () => {
   await new Promise<void>((r) => mock.listen(0, "127.0.0.1", r));
   mockPort = (mock.address() as { port: number }).port;
 
+  voice = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const json = (code: number, o: unknown) => res.writeHead(code, { "Content-Type": "application/json" }).end(JSON.stringify(o));
+      if (req.headers["x-voice-token"] !== VOICE_TOKEN) return json(401, { detail: "Jeton refusé." });
+      const u = new URL(req.url ?? "/", "http://x");
+      if (u.pathname === "/health") return json(200, { status: "ready", error: "", device: "cpu", model: "fake" });
+      if (u.pathname === "/transcribe") {
+        voiceCalls.push({ lang: u.searchParams.get("lang"), bytes: Buffer.concat(chunks).length, type: req.headers["content-type"] });
+        return json(200, { text: "bonjour agent", language: "fr", seconds: 1, ms: 5 });
+      }
+      json(404, {});
+    });
+  });
+  await new Promise<void>((r) => voice.listen(0, "127.0.0.1", r));
+  voicePort = (voice.address() as { port: number }).port;
+
   fs.writeFileSync(path.join(home, "settings.json"), JSON.stringify({ workspace: work, baseUrls: { zai: `http://127.0.0.1:${mockPort}/v1` }, n8nUrl: `http://127.0.0.1:${mockPort}/n8n` }));
-  server = spawn(process.execPath, ["server/index.ts", "--no-open"], { env: { ...process.env, CODEVIEW_HOME: home, PORT: String(PORT) }, stdio: "pipe" });
+  server = spawn(process.execPath, ["server/index.ts", "--no-open"], { env: { ...process.env, CODEVIEW_HOME: home, PORT: String(PORT), CODEVIEW_VOICE_URL: `http://127.0.0.1:${voicePort}`, CODEVIEW_VOICE_TOKEN: VOICE_TOKEN }, stdio: "pipe" });
   await new Promise<void>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error("serveur non démarré")), 15000);
     server.stdout!.on("data", (d) => String(d).includes("→") && (clearTimeout(t), resolve()));
@@ -72,6 +94,7 @@ before(async () => {
 after(() => {
   server?.kill();
   mock?.close();
+  voice?.close();
 });
 
 const api = (p: string, init: RequestInit = {}) =>
@@ -200,4 +223,64 @@ test("fichiers : lecture, écriture, évasion de chemin refusée", async () => {
 test("conversation persistée", async () => {
   const list = await (await api("/api/chats")).json();
   assert.ok(list.length >= 4);
+});
+
+test("aucune limite d'étapes : 60 tours d'outils d'affilée, sans « continue »", async () => {
+  let turn = 0;
+  script = () => (turn++ < 60 ? { tool: [{ name: "list_dir", args: { path: ".", depth: turn } }] } : { text: "Tout est fait." });
+  const ev = await chat("travaille longtemps");
+  assert.equal(ev.filter((e) => e.type === "tool_result").length, 60);
+  assert.equal(ev.at(-1).reason, "end");
+  assert.ok(!ev.some((e) => e.type === "error"));
+});
+
+test("boucle : la même action répétée 10 fois arrête l'agent", async () => {
+  script = () => ({ tool: [{ name: "list_dir", args: { path: "." } }] });
+  const ev = await chat("boucle");
+  assert.equal(ev.at(-1).reason, "loop");
+  assert.match(ev.find((e) => e.type === "error").message, /Boucle détectée/);
+  assert.equal(ev.filter((e) => e.type === "tool_result").length, 9);
+});
+
+test("réponse coupée par la limite de sortie : reprise automatique", async () => {
+  const seen: any[][] = [];
+  let turn = 0;
+  script = (messages) => {
+    seen.push(messages);
+    return [{ text: "Première moitié, ", finish: "length" }, { text: "seconde moitié." }][turn++];
+  };
+  const ev = await chat("long texte");
+  assert.equal(seen.length, 2);
+  assert.match(seen[1].at(-1).content, /Reprends exactement/);
+  assert.equal(ev.filter((e) => e.type === "text").map((e) => e.delta).join(""), "Première moitié, seconde moitié.");
+  assert.equal(ev.at(-1).reason, "end");
+});
+
+test("voix : transcription via le moteur local, jeton transmis, état exposé", async () => {
+  const st = await (await api("/api/state")).json();
+  assert.equal(st.voice.installed, true);
+  assert.equal(st.settings.voiceAutoSend, false);
+  const wav = Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(40)]);
+  const r = await api("/api/voice/transcribe?lang=fr", { method: "POST", body: wav, headers: { "Content-Type": "audio/wav" } });
+  assert.equal(r.status, 200);
+  const out = await r.json();
+  assert.equal(out.text, "bonjour agent");
+  assert.deepEqual(voiceCalls.at(-1), { lang: "fr", bytes: wav.length, type: "audio/wav" });
+  assert.equal((await (await api("/api/voice/status")).json()).state, "ready");
+});
+
+test("voix : refusée sans jeton local ou depuis une autre origine", async () => {
+  const body = Buffer.alloc(100);
+  const noCookie = await fetch(`http://127.0.0.1:${PORT}/api/voice/transcribe`, { method: "POST", body, headers: { Origin: `http://127.0.0.1:${PORT}` } });
+  assert.equal(noCookie.status, 401);
+  const evil = await api("/api/voice/transcribe", { method: "POST", body, headers: { Origin: "http://evil.example" } });
+  assert.equal(evil.status, 403);
+});
+
+test("réglages vocaux : modifiables, les inconnus ignorés", async () => {
+  const s = await (await api("/api/settings", { method: "PUT", body: JSON.stringify({ voiceAutoSend: true, voiceLang: "en", maxSteps: 5, bidon: 1 }) })).json();
+  assert.equal(s.settings.voiceAutoSend, true);
+  assert.equal(s.settings.voiceLang, "en");
+  assert.ok(!("maxSteps" in s.settings) && !("bidon" in s.settings));
+  await api("/api/settings", { method: "PUT", body: JSON.stringify({ voiceAutoSend: false, voiceLang: "fr" }) });
 });

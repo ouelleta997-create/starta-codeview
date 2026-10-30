@@ -1,4 +1,4 @@
-import { FolderOpen, PanelLeft, PanelRight, Search, Settings, SquareTerminal, ChevronDown, Clock } from "lucide-react";
+import { Code2, FolderOpen, Mic, Search, Settings, SquareTerminal, ChevronDown, Clock } from "lucide-react";
 import { useStore } from "../store";
 import { Dropdown, Logo } from "./ui";
 
@@ -7,6 +7,7 @@ export const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ??
 export function TitleBar() {
   const { app, show, toggle, pickFolder, openFolder } = useStore();
   const ws = app?.settings.workspace;
+  const autoSend = !!app?.settings.voiceAutoSend;
   return (
     <div className="titlebar">
       <div className="brand"><Logo /> <span>CodeView</span></div>
@@ -27,12 +28,20 @@ export function TitleBar() {
           </>
         )}
       </Dropdown>
-      <button className="search-pill" onClick={() => { void useStore.getState().loadAllFiles(); useStore.setState({ palette: "files" }); }}>
-        <Search size={13} /> Rechercher un fichier <kbd>Ctrl P</kbd>
+      {show.code ? (
+        <button className="search-pill" onClick={() => { void useStore.getState().loadAllFiles(); useStore.setState({ palette: "files" }); }}>
+          <Search size={13} /> Rechercher un fichier <kbd>Ctrl P</kbd>
+        </button>
+      ) : <span className="sp" />}
+      <button
+        className={`pill auto-send ${autoSend ? "on" : ""}`}
+        onClick={() => void useStore.getState().patchSettings({ voiceAutoSend: !autoSend })}
+        title={autoSend ? "Envoi automatique : ce que tu dictes part tout de suite à l'agent (cliquer pour désactiver)" : "Envoi manuel : la dictée remplit la zone de saisie, tu envoies toi-même (cliquer pour envoyer automatiquement)"}
+      >
+        <Mic /><span>{autoSend ? "Envoi auto" : "Envoi manuel"}</span>
       </button>
-      <button className={`icon-btn ${show.sidebar ? "on" : ""}`} onClick={() => toggle("sidebar")} title="Barre latérale (Ctrl+B)"><PanelLeft /></button>
+      <button className={`icon-btn ${show.code ? "on" : ""}`} onClick={() => toggle("code")} title="Éditeur de code (Ctrl+B)"><Code2 /></button>
       <button className={`icon-btn ${show.term ? "on" : ""}`} onClick={() => toggle("term")} title="Terminal (Ctrl+J)"><SquareTerminal /></button>
-      <button className={`icon-btn ${show.agent ? "on" : ""}`} onClick={() => toggle("agent")} title="Agent (Ctrl+L)"><PanelRight /></button>
       <button className="icon-btn" onClick={() => useStore.setState({ settings: "providers" })} title="Réglages (Ctrl+,)">
         <Settings />
         {app && !Object.values(app.providers).some((p) => p.configured) && <span className="dot-badge" />}

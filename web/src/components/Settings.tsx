@@ -1,13 +1,14 @@
 import { useState } from "react";
-import { X, KeyRound, Workflow, Bot, Palette as PaletteIcon, Check, Loader2, Trash2, ExternalLink } from "lucide-react";
+import { X, KeyRound, Workflow, Bot, Mic, Palette as PaletteIcon, Check, Loader2, Trash2, ExternalLink } from "lucide-react";
 import { useStore } from "../store";
 import { api, PROVIDER_ORDER, type AppState, type ProviderId } from "../api";
 
-type Section = "providers" | "n8n" | "agent" | "appearance";
+type Section = "providers" | "n8n" | "agent" | "voice" | "appearance";
 const NAV: { id: Section; label: string; icon: typeof KeyRound }[] = [
   { id: "providers", label: "Fournisseurs", icon: KeyRound },
   { id: "n8n", label: "n8n", icon: Workflow },
   { id: "agent", label: "Agent", icon: Bot },
+  { id: "voice", label: "Voix", icon: Mic },
   { id: "appearance", label: "Apparence", icon: PaletteIcon },
 ];
 
@@ -112,6 +113,11 @@ function N8nSection() {
           <button className="btn primary" onClick={() => void saveUrl()}>{saved ? <><Check />OK</> : "Enregistrer"}</button>
         </div>
         <div className="hint">Sans « /api/v1 » à la fin.</div>
+        {app.settings.n8nUrl && !app.n8n.configured && (
+          <div className="hint" style={{ marginTop: 10 }}>
+            <b>Étape suivante :</b> <a href={`${app.settings.n8nUrl}/settings/api`} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>ouvre la page « n8n API » de ton instance <ExternalLink size={10} /></a>, clique <b>Create an API key</b>, copie la clé, puis colle-la ci-dessous.
+          </div>
+        )}
       </div>
       <SecretCard name="n8n" title="Clé API n8n" configured={app.n8n.configured || !!app.n8n.masked} masked={app.n8n.masked} placeholder="n8n_api_…" onSaved={() => void refreshWorkflows()}
         extra={<div className="hint">Dans n8n : Paramètres → API → Créer une clé. Active seulement les droits dont tu as besoin.</div>} />
@@ -136,14 +142,67 @@ function AgentSection() {
         <div><b>Prudent</b><span>Demande avant chaque écriture de fichier, chaque commande et chaque modification n8n. La lecture reste libre.</span></div>
       </label>
       <div className="card" style={{ marginTop: 14 }}>
-        <div className="card-h">Étapes maximum par demande</div>
-        <div className="field"><input className="input" type="number" min={5} max={200} defaultValue={app.settings.maxSteps} onBlur={(e) => void patchSettings({ maxSteps: Math.min(200, Math.max(5, Number(e.target.value) || 40)) })} style={{ maxWidth: 110, flex: "none" }} /></div>
-        <div className="hint">Un garde-fou contre les boucles. Une « étape » = un tour de l'agent (un ou plusieurs outils).</div>
+        <div className="card-h">Aucune limite d'étapes</div>
+        <div className="hint" style={{ marginTop: 0 }}>L'agent travaille jusqu'au bout sans te demander de dire « continue » : tu peux t'éloigner. Deux filets seulement : il s'arrête si une même action se répète 10 fois de suite, et reprend tout seul une réponse coupée par la limite de sortie du modèle.</div>
       </div>
       <div className="card">
         <div className="card-h">Consignes de projet</div>
         <div className="hint" style={{ marginTop: 0 }}>Si le dossier contient <code>AGENTS.md</code>, <code>CLAUDE.md</code> ou <code>.codeview/rules.md</code>, l'agent le lit à chaque conversation.</div>
       </div>
+    </>
+  );
+}
+
+const VOICE_MODELS: { id: string; label: string; hint: string }[] = [
+  { id: "tiny", label: "tiny", hint: "≈ 75 Mo · le plus rapide, approximatif" },
+  { id: "base", label: "base", hint: "≈ 145 Mo · rapide, correct en français clair" },
+  { id: "small", label: "small", hint: "≈ 480 Mo · bon équilibre (par défaut)" },
+  { id: "medium", label: "medium", hint: "≈ 1,5 Go · plus précis, plus lent sur processeur" },
+  { id: "large-v3-turbo", label: "large-v3-turbo", hint: "≈ 1,6 Go · le plus précis ; confortable surtout avec une carte NVIDIA" },
+];
+
+function VoiceSection() {
+  const { app, patchSettings, refreshVoice } = useStore();
+  if (!app) return null;
+  const v = app.voice;
+  const s = app.settings;
+  const status = !v.installed ? "non installée" : v.state === "ready" ? "prête" : v.state === "error" ? "en erreur" : v.state === "loading" ? "chargement du modèle…" : "en veille";
+  return (
+    <>
+      <h2>Voix</h2>
+      <p>Dicte à chaque conversation avec son bouton micro. La transcription se fait sur ta machine (Whisper, via un petit serveur FastAPI local) : aucun son ne quitte ton ordinateur.</p>
+      <div className="card">
+        <div className="card-h">Moteur vocal<span className={`badge ${v.state === "ready" ? "ok" : ""}`}>{status}</span></div>
+        {!v.installed && <div className="hint" style={{ marginTop: 0 }}>Pour l'installer : double-clic sur <code>Installer-voix.bat</code>, ou <code>npm run voice:install</code> dans le dossier de CodeView, puis relance l'application.</div>}
+        {v.installed && v.state === "ready" && <div className="hint" style={{ marginTop: 0 }}>Modèle « {v.model} » sur {v.device === "cuda" ? "carte NVIDIA" : "processeur"}.</div>}
+        {v.state === "loading" && <div className="hint" style={{ marginTop: 0 }}>Le tout premier lancement télécharge le modèle ; la suite est instantanée.</div>}
+        {v.state === "error" && <div className="hint bad" style={{ marginTop: 0 }}>{v.error}</div>}
+        {v.installed && <div className="field" style={{ marginTop: 8 }}><button className="btn" onClick={() => void refreshVoice()}>Actualiser</button></div>}
+      </div>
+      <div className="card">
+        <div className="card-h">Modèle de reconnaissance</div>
+        <div className="field">
+          <select className="input" value={s.voiceModel} onChange={(e) => void patchSettings({ voiceModel: e.target.value })}>
+            {VOICE_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label} — {m.hint}</option>)}
+          </select>
+        </div>
+        <div className="hint">Un modèle plus gros comprend mieux mais met plus de temps. Un modèle jamais utilisé se télécharge à la première dictée.</div>
+      </div>
+      <div className="card">
+        <div className="card-h">Langue parlée</div>
+        <div className="field">
+          <select className="input" value={s.voiceLang} onChange={(e) => void patchSettings({ voiceLang: e.target.value })}>
+            <option value="fr">Français</option>
+            <option value="en">Anglais</option>
+            <option value="auto">Détection automatique (moins fiable sur les phrases courtes)</option>
+          </select>
+        </div>
+      </div>
+      <label className={`opt ${s.voiceAutoSend ? "on" : ""}`}>
+        <input type="checkbox" checked={s.voiceAutoSend} onChange={(e) => void patchSettings({ voiceAutoSend: e.target.checked })} />
+        <div><b>Envoyer automatiquement ce que je dicte</b><span>Dès que la transcription est prête, le message part à l'agent (s'il travaille déjà, il part dès qu'il a fini). Désactivé : le texte attend dans la zone de saisie, tu l'envoies toi-même.</span></div>
+      </label>
+      <div className="hint" style={{ marginTop: 12 }}>Clique sur le micro d'une conversation pour parler ; il s'arrête tout seul après environ 2 secondes de silence (ou reclique pour terminer). Un seul micro à la fois.</div>
     </>
   );
 }
@@ -181,6 +240,7 @@ export function Settings() {
           {section === "providers" && <Providers />}
           {section === "n8n" && <N8nSection />}
           {section === "agent" && <AgentSection />}
+          {section === "voice" && <VoiceSection />}
           {section === "appearance" && <Appearance />}
         </div>
       </div>

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, connectWs, wsSend, type AppState, type ChatMeta, type Entry, type ModelList, type ProviderId, type Workflow } from "./api";
+import { startRecording, type Recording } from "./voice";
 import { ensureModel, getValue, languageFor, setValue, disposeModel, getSelectionText, revealLine } from "./monaco";
 import { writeTerminal, writePrompt, notifyExit, setCwdProvider } from "./terminal-bus";
 
@@ -21,6 +22,23 @@ export type Item =
   | { kind: "approval"; id: string; tool: string; title: string; detail: string; state: "pending" | "allowed" | "denied" }
   | { kind: "error"; text: string };
 
+/** Nombre de conversations côte à côte. */
+export const PANES = 4;
+
+export interface Pane {
+  chatId: string;
+  title: string;
+  items: Item[];
+  running: boolean;
+  usage: { input: number; output: number };
+  draft: string;
+  /** Modèle propre à cette conversation ; null = celui des réglages. */
+  model: { provider: ProviderId; id: string } | null;
+  voice: "idle" | "rec" | "busy";
+  /** Dictée envoyée pendant que l'agent travaille : part toute seule dès qu'il a fini. */
+  sendWhenIdle: boolean;
+}
+
 interface S {
   app: AppState | null;
   online: boolean;
@@ -31,18 +49,15 @@ interface S {
   tabs: Tab[];
   active: string | null;
   sidebarTab: "files" | "n8n";
-  show: { sidebar: boolean; agent: boolean; term: boolean };
-  settings: false | "providers" | "n8n" | "agent" | "appearance";
+  /** « Mode code » : barre latérale + éditeur (+ terminal) à gauche des conversations. */
+  show: { code: boolean; term: boolean };
+  settings: false | "providers" | "n8n" | "agent" | "voice" | "appearance";
   palette: null | "files" | "cmd";
   toast: string;
-  chatId: string;
-  chatTitle: string;
-  items: Item[];
-  running: boolean;
-  usage: { input: number; output: number };
+  panes: Pane[];
+  focused: number;
   chats: ChatMeta[];
   includeActive: boolean;
-  draft: string;
   workflows: Workflow[];
   n8nError: string;
   termCwd: string;
@@ -51,7 +66,7 @@ interface S {
   refreshApp(): Promise<void>;
   loadModels(): Promise<void>;
   setApp(a: AppState): void;
-  toggle(k: "sidebar" | "agent" | "term"): void;
+  toggle(k: "code" | "term"): void;
   say(msg: string): void;
 
   loadDir(p: string): Promise<void>;
@@ -68,32 +83,69 @@ interface S {
   pickFolder(): Promise<void>;
   refreshWorkflows(): Promise<void>;
 
-  sendChat(text: string): void;
-  stop(): void;
-  newChat(): void;
-  loadChat(id: string): Promise<void>;
+  sendChat(i: number, text: string): void;
+  stop(i: number): void;
+  newChat(i: number): void;
+  loadChat(i: number, id: string): Promise<boolean>;
   refreshChats(): Promise<void>;
   decide(id: string, allow: boolean): void;
-  setModel(provider: ProviderId, id: string): Promise<void>;
+  setDraft(i: number, text: string): void;
+  setPaneModel(i: number, provider: ProviderId, id: string): void;
+  toggleMic(i: number): Promise<void>;
+  refreshVoice(): Promise<void>;
   patchSettings(p: Record<string, unknown>): Promise<void>;
 }
 
 const uuid = () => crypto.randomUUID();
 
-// Regroupe les deltas de texte pour ne rendre qu'une fois par image.
-let pendingText = "";
-let pendingThink = "";
-let raf = 0;
+const blankPane = (): Pane => ({
+  chatId: uuid(), title: "Nouvelle conversation", items: [], running: false, usage: { input: 0, output: 0 },
+  draft: "", model: null, voice: "idle", sendWhenIdle: false,
+});
+
+// Les quatre fenêtres de chat survivent à un rechargement : on retient leur conversation et leur modèle.
+const PANES_KEY = "cv.panes";
+const readSavedPanes = (): { id?: string; model?: Pane["model"] }[] => {
+  try { const v = JSON.parse(localStorage.getItem(PANES_KEY) ?? "[]"); return Array.isArray(v) ? v : []; } catch { return []; }
+};
+const savePanes = (panes: Pane[]) => {
+  try { localStorage.setItem(PANES_KEY, JSON.stringify(panes.map((p) => ({ id: p.items.length ? p.chatId : undefined, model: p.model })))); } catch { /* stockage indisponible */ }
+};
+
+// Regroupe les deltas de texte pour ne rendre qu'une fois par image, séparément pour chaque fenêtre.
+const bufs = Array.from({ length: PANES }, () => ({ text: "", think: "", raf: 0 }));
 let agentUsedTerminal = false;
 
+// Un seul micro à la fois ; le niveau sonore est diffusé aux boutons sans passer par le store (125 mises à jour/s).
+let rec: { pane: number; r: Recording } | null = null;
+const levelListeners = new Set<(pane: number, level: number) => void>();
+export const onMicLevel = (cb: (pane: number, level: number) => void) => { levelListeners.add(cb); return () => void levelListeners.delete(cb); };
+
+const micError = (e: unknown) => {
+  const name = (e as Error)?.name;
+  if (name === "NotAllowedError" || name === "SecurityError") return "Micro refusé — autorise-le (icône à gauche de la barre d'adresse) puis réessaie.";
+  if (name === "NotFoundError") return "Aucun micro détecté.";
+  return `Micro indisponible : ${(e as Error)?.message ?? e}`;
+};
+
 export const useStore = create<S>((set, get) => {
-  const flush = () => {
-    raf = 0;
-    if (!pendingText && !pendingThink) return;
-    const t = pendingText, k = pendingThink;
-    pendingText = pendingThink = "";
+  const setPane = (i: number, patch: Partial<Pane> | ((p: Pane) => Partial<Pane>)) =>
     set((s) => {
-      const items = s.items.slice();
+      if (!s.panes[i]) return s;
+      const panes = s.panes.slice();
+      panes[i] = { ...panes[i], ...(typeof patch === "function" ? patch(panes[i]) : patch) };
+      return { panes };
+    });
+  const paneOf = (chatId: string) => get().panes.findIndex((p) => p.chatId === chatId);
+
+  const flush = (i: number) => {
+    const b = bufs[i];
+    b.raf = 0;
+    if (!b.text && !b.think) return;
+    const t = b.text, k = b.think;
+    b.text = b.think = "";
+    setPane(i, (p) => {
+      const items = p.items.slice();
       let last = items[items.length - 1];
       if (!last || last.kind !== "assistant" || !last.streaming) {
         last = { kind: "assistant", text: "", thinking: "", streaming: true };
@@ -103,57 +155,66 @@ export const useStore = create<S>((set, get) => {
       return { items };
     });
   };
-  const schedule = () => { if (!raf) raf = requestAnimationFrame(flush); };
-  const endStream = () => {
-    if (raf) { cancelAnimationFrame(raf); raf = 0; }
-    flush();
-    set((s) => ({ items: s.items.map((i) => (i.kind === "assistant" && i.streaming ? { ...i, streaming: false } : i)) }));
+  const schedule = (i: number) => { if (!bufs[i].raf) bufs[i].raf = requestAnimationFrame(() => flush(i)); };
+  const endStream = (i: number) => {
+    if (bufs[i].raf) { cancelAnimationFrame(bufs[i].raf); bufs[i].raf = 0; }
+    flush(i);
+    setPane(i, (p) => ({ items: p.items.map((it) => (it.kind === "assistant" && it.streaming ? { ...it, streaming: false } : it)) }));
   };
-  const patchItem = (match: (i: Item) => boolean, fn: (i: any) => Item) =>
-    set((s) => {
-      const idx = s.items.findIndex(match);
-      if (idx < 0) return s;
-      const items = s.items.slice();
+  const patchItem = (i: number, match: (it: Item) => boolean, fn: (it: any) => Item) =>
+    setPane(i, (p) => {
+      const idx = p.items.findIndex(match);
+      if (idx < 0) return {};
+      const items = p.items.slice();
       items[idx] = fn(items[idx]);
       return { items };
     });
 
   const onEvent = (chatId: string, e: any) => {
-    if (chatId !== get().chatId) return;
+    const i = paneOf(chatId);
+    if (i < 0) return;
     switch (e.type) {
-      case "text": pendingText += e.delta; schedule(); break;
-      case "thinking": pendingThink += e.delta; schedule(); break;
+      case "text": bufs[i].text += e.delta; schedule(i); break;
+      case "thinking": bufs[i].think += e.delta; schedule(i); break;
       case "tool_start":
-        endStream();
-        set((s) => ({ items: [...s.items, { kind: "tool", id: e.id, name: e.name, args: e.args, status: "running" }] }));
+        endStream(i);
+        setPane(i, (p) => ({ items: [...p.items, { kind: "tool", id: e.id, name: e.name, args: e.args, status: "running" }] }));
         if (e.name === "run_command") {
-          writeTerminal(`\r\n\x1b[38;5;78m● agent\x1b[0m \x1b[2m$\x1b[0m ${String(e.args.command ?? "").replace(/\r?\n/g, "\r\n  ")}\r\n`);
+          writeTerminal(`\r\n\x1b[38;5;78m● agent ${i + 1}\x1b[0m \x1b[2m$\x1b[0m ${String(e.args.command ?? "").replace(/\r?\n/g, "\r\n  ")}\r\n`);
           agentUsedTerminal = true;
-          set((s) => ({ show: { ...s.show, term: true } }));
         }
         break;
       case "approval":
-        endStream();
-        set((s) => ({ items: [...s.items, { kind: "approval", id: e.id, tool: e.tool, title: e.title, detail: e.detail, state: "pending" }] }));
+        endStream(i);
+        setPane(i, (p) => ({ items: [...p.items, { kind: "approval", id: e.id, tool: e.tool, title: e.title, detail: e.detail, state: "pending" }] }));
         break;
       case "tool_result":
-        patchItem((i) => i.kind === "tool" && i.id === e.id, (i) => ({ ...i, status: e.isError ? "error" : "done", result: e.content }));
+        patchItem(i, (it) => it.kind === "tool" && it.id === e.id, (it) => ({ ...it, status: e.isError ? "error" : "done", result: e.content }));
         if (!e.isError) {
-          const it = get().items.find((i) => i.kind === "tool" && i.id === e.id) as Extract<Item, { kind: "tool" }> | undefined;
-          if (it && (it.name === "write_file" || it.name === "edit_file") && typeof it.args.path === "string") void get().openFile(it.args.path.replace(/\\/g, "/"));
+          const it = get().panes[i].items.find((x) => x.kind === "tool" && x.id === e.id) as Extract<Item, { kind: "tool" }> | undefined;
+          // L'éditeur ne s'ouvre tout seul que si le mode code est affiché.
+          if (get().show.code && it && (it.name === "write_file" || it.name === "edit_file") && typeof it.args.path === "string") void get().openFile(it.args.path.replace(/\\/g, "/"));
           if (it?.name.startsWith("n8n_")) void get().refreshWorkflows();
         }
         break;
-      case "usage": set((s) => ({ usage: { input: s.usage.input + e.input, output: s.usage.output + e.output } })); break;
-      case "title": set({ chatTitle: e.title }); break;
-      case "error": endStream(); set((s) => ({ items: [...s.items, { kind: "error", text: e.message }] })); break;
-      case "done":
-        endStream();
-        set({ running: false });
-        set((s) => ({ items: s.items.map((i) => (i.kind === "tool" && (i.status === "running" || i.status === "waiting") ? { ...i, status: "error" as const } : i.kind === "approval" && i.state === "pending" ? { ...i, state: "denied" as const } : i)) }));
+      case "usage": setPane(i, (p) => ({ usage: { input: p.usage.input + e.input, output: p.usage.output + e.output } })); break;
+      case "title": setPane(i, { title: e.title }); break;
+      case "error": endStream(i); setPane(i, (p) => ({ items: [...p.items, { kind: "error", text: e.message }] })); break;
+      case "done": {
+        endStream(i);
+        setPane(i, (p) => ({
+          running: false,
+          items: p.items.map((it) => (it.kind === "tool" && (it.status === "running" || it.status === "waiting") ? { ...it, status: "error" as const } : it.kind === "approval" && it.state === "pending" ? { ...it, state: "denied" as const } : it)),
+        }));
         if (agentUsedTerminal) { agentUsedTerminal = false; writePrompt(); }
         void get().refreshChats();
+        const p = get().panes[i];
+        if (p.sendWhenIdle) {
+          setPane(i, { sendWhenIdle: false });
+          if (p.draft.trim()) get().sendChat(i, p.draft);
+        }
         break;
+      }
     }
   };
 
@@ -185,13 +246,40 @@ export const useStore = create<S>((set, get) => {
     }
   };
 
+  /** Termine la dictée de la fenêtre i, transcrit, puis dépose le texte dans sa zone de saisie. */
+  const finishMic = async (i: number) => {
+    const cur = rec;
+    if (!cur || cur.pane !== i) return;
+    rec = null;
+    setPane(i, { voice: "busy" });
+    try {
+      const { wav } = await cur.r.finish();
+      if (!wav) return get().say("Rien entendu.");
+      const lang = get().app?.settings.voiceLang ?? "fr";
+      const res = await fetch(`/api/voice/transcribe?lang=${encodeURIComponent(lang)}`, { method: "POST", headers: { "Content-Type": "audio/wav" }, body: wav });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? `Erreur ${res.status}`);
+      const text = String(data.text ?? "").trim();
+      if (!text) return get().say("Rien compris — réessaie.");
+      setPane(i, (p) => ({ draft: p.draft.trim() ? `${p.draft.trim()} ${text}` : text }));
+      if (get().app?.settings.voiceAutoSend) {
+        if (get().panes[i].running) setPane(i, { sendWhenIdle: true });
+        else get().sendChat(i, get().panes[i].draft);
+      } else document.getElementById(`composer-${i}`)?.focus();
+    } catch (e) {
+      get().say(`Voix : ${(e as Error).message}`);
+    } finally {
+      setPane(i, { voice: "idle" });
+    }
+  };
+
   return {
     app: null, online: false, models: {}, dirs: {}, expanded: {}, allFiles: [], tabs: [], active: null,
     sidebarTab: "files",
-    show: { sidebar: true, agent: true, term: false },
+    show: { code: false, term: false },
     settings: false, palette: null, toast: "",
-    chatId: uuid(), chatTitle: "Nouvelle conversation", items: [], running: false, usage: { input: 0, output: 0 }, chats: [],
-    includeActive: true, draft: "", workflows: [], n8nError: "", termCwd: "",
+    panes: Array.from({ length: PANES }, blankPane), focused: 0, chats: [],
+    includeActive: true, workflows: [], n8nError: "", termCwd: "",
 
     async init() {
       setCwdProvider(() => get().termCwd);
@@ -202,11 +290,26 @@ export const useStore = create<S>((set, get) => {
       const a = get().app!;
       if (a.settings.workspace) { await get().loadDir(""); set({ termCwd: a.settings.workspace }); }
       if (a.n8n.configured) void get().refreshWorkflows();
+      // Retrouve les quatre conversations de la dernière séance.
+      const saved = readSavedPanes();
+      await Promise.all(Array.from({ length: PANES }, async (_, i) => {
+        const sv = saved[i];
+        if (sv?.model) setPane(i, { model: sv.model });
+        if (sv?.id) await get().loadChat(i, sv.id).catch(() => false);
+      }));
+      void get().refreshVoice();
     },
     async refreshApp() { set({ app: await api("GET", "/api/state") }); },
     setApp(app) { set({ app }); },
     async loadModels() { try { set({ models: await api("GET", "/api/models") }); } catch { /* hors-ligne */ } },
-    toggle(k) { set((s) => ({ show: { ...s.show, [k]: !s.show[k] } })); },
+    toggle(k) {
+      set((s) => {
+        const show = { ...s.show, [k]: !s.show[k] };
+        if (k === "term" && show.term) show.code = true; // le terminal vit dans le mode code
+        if (k === "code" && !show.code) show.term = false;
+        return { show };
+      });
+    },
     say(toast) { set({ toast }); setTimeout(() => get().toast === toast && set({ toast: "" }), 2600); },
 
     async loadDir(p) {
@@ -226,6 +329,7 @@ export const useStore = create<S>((set, get) => {
 
     async openFile(p, line) {
       const id = `file:${p}`;
+      if (!get().show.code) set((s) => ({ show: { ...s.show, code: true } }));
       const existing = get().tabs.find((t) => t.id === id);
       if (existing) { set({ active: id }); if (line) setTimeout(() => revealLine(line), 60); return; }
       const title = p.split("/").pop()!;
@@ -246,6 +350,7 @@ export const useStore = create<S>((set, get) => {
 
     async openN8n(wid) {
       const id = `n8n:${wid}`;
+      if (!get().show.code) set((s) => ({ show: { ...s.show, code: true } }));
       if (get().tabs.some((t) => t.id === id)) return set({ active: id });
       const wf = get().workflows.find((w) => w.id === wid);
       set((s) => ({ tabs: [...s.tabs, { id, kind: "n8n", path: wf?.name ?? wid, title: `${wf?.name ?? wid}.n8n.json`, dirty: false, loading: true, n8nId: wid }], active: id }));
@@ -297,7 +402,7 @@ export const useStore = create<S>((set, get) => {
         for (const t of get().tabs) disposeModel(t.id);
         set({ app, tabs: [], active: null, dirs: {}, expanded: {}, allFiles: [], termCwd: app.settings.workspace ?? "" });
         await get().loadDir("");
-        get().newChat();
+        for (let i = 0; i < PANES; i++) get().newChat(i);
         wsSend({ type: "term_cwd" });
       } catch (e) { get().say((e as Error).message); }
     },
@@ -312,30 +417,45 @@ export const useStore = create<S>((set, get) => {
       try { set({ workflows: await api("GET", "/api/n8n/workflows"), n8nError: "" }); } catch (e) { set({ n8nError: (e as Error).message }); }
     },
 
-    sendChat(text) {
+    sendChat(i, text) {
       const s = get();
-      if (s.running || !text.trim()) return;
-      const activeTab = s.tabs.find((t) => t.id === s.active && t.kind === "file");
-      const sel = getSelectionText();
+      const p = s.panes[i];
+      if (!p || p.running || !text.trim()) return;
+      const model = p.model ?? s.app?.settings.model ?? null;
+      if (!model) return get().say("Choisis d'abord un modèle (en bas de la conversation).");
+      // Le fichier ouvert dans l'éditeur n'est joint que si le mode code est affiché : sinon il est invisible pour l'utilisateur.
+      const activeTab = s.show.code ? s.tabs.find((t) => t.id === s.active && t.kind === "file") : undefined;
+      const sel = activeTab ? getSelectionText() : "";
       const file = s.includeActive && activeTab ? activeTab.path : undefined;
-      const model = s.app?.settings.model;
-      set((st) => ({ items: [...st.items, { kind: "user", text, file, sel: !!sel && !!file }], running: true, draft: "" }));
-      if (!wsSend({ type: "chat", chatId: s.chatId, text, model, context: file ? { file, selection: sel || undefined } : undefined })) {
-        set((st) => ({ running: false, items: [...st.items, { kind: "error", text: "Connexion au serveur perdue — reconnexion en cours…" }] }));
+      setPane(i, (q) => ({ items: [...q.items, { kind: "user", text, file, sel: !!sel && !!file }], running: true, draft: "", model, sendWhenIdle: false }));
+      savePanes(get().panes);
+      if (!wsSend({ type: "chat", chatId: p.chatId, text, model, context: file ? { file, selection: sel || undefined } : undefined })) {
+        setPane(i, (q) => ({ running: false, items: [...q.items, { kind: "error", text: "Connexion au serveur perdue — reconnexion en cours…" }] }));
       }
     },
-    stop() { wsSend({ type: "stop", chatId: get().chatId }); },
-    newChat() {
-      if (get().running) get().stop();
-      set({ chatId: uuid(), chatTitle: "Nouvelle conversation", items: [], usage: { input: 0, output: 0 }, running: false });
+    stop(i) {
+      setPane(i, { sendWhenIdle: false });
+      wsSend({ type: "stop", chatId: get().panes[i].chatId });
     },
-    async loadChat(id) {
-      if (get().running) get().stop();
-      const c = await api("GET", `/api/chats/${id}`);
+    newChat(i) {
+      const old = get().panes[i];
+      if (!old) return;
+      if (old.running) get().stop(i);
+      if (rec?.pane === i) { rec.r.cancel(); rec = null; }
+      setPane(i, { ...blankPane(), model: old.model });
+      savePanes(get().panes);
+    },
+    async loadChat(i, id) {
+      const elsewhere = get().panes.findIndex((p, k) => k !== i && p.chatId === id);
+      if (elsewhere >= 0) { get().say(`Cette conversation est déjà ouverte dans la fenêtre ${elsewhere + 1}.`); return false; }
+      if (get().panes[i].running) get().stop(i);
+      let c: any;
+      try { c = await api("GET", `/api/chats/${id}`); } catch { return false; }
       const items: Item[] = [];
       const byId = new Map<string, Extract<Item, { kind: "tool" }>>();
       for (const m of c.messages as any[]) {
         if (m.role === "user") {
+          if (m.auto) continue;
           const text = String(m.content).replace(/\n\n<(?:file|selection) [\s\S]*$/, "").replace(/^\[Fichier ouvert dans l'éditeur : [^\]]*\]\n/, "");
           items.push({ kind: "user", text });
         } else if (m.role === "assistant") {
@@ -350,16 +470,44 @@ export const useStore = create<S>((set, get) => {
           if (it) { it.result = m.content; if (m.isError) (it as any).status = "error"; }
         }
       }
-      set({ chatId: id, chatTitle: c.title, items: items.map((i) => ({ ...i })), usage: { input: 0, output: 0 } });
+      setPane(i, { chatId: id, title: c.title, items: items.map((x) => ({ ...x })), usage: { input: 0, output: 0 }, running: false, draft: "" });
+      savePanes(get().panes);
+      return true;
     },
     async refreshChats() { try { set({ chats: await api("GET", "/api/chats") }); } catch { /* ignoré */ } },
     decide(id, allow) {
       wsSend({ type: "approve", id, allow });
-      patchItem((i) => i.kind === "approval" && i.id === id, (i) => ({ ...i, state: allow ? "allowed" : "denied" }));
+      get().panes.forEach((_, i) => patchItem(i, (it) => it.kind === "approval" && it.id === id, (it) => ({ ...it, state: allow ? "allowed" : "denied" })));
     },
-    async setModel(provider, id) {
-      await get().patchSettings({ model: { provider, id } });
+    setDraft(i, text) { setPane(i, { draft: text }); },
+    setPaneModel(i, provider, id) {
+      setPane(i, { model: { provider, id } });
+      savePanes(get().panes);
     },
-    async patchSettings(p) { set({ app: await api("PUT", "/api/settings", p) }); },
+
+    async toggleMic(i) {
+      const s = get();
+      if (!s.app?.voice.installed) return get().say("La voix n'est pas installée — lance « npm run voice:install » (ou Installer-voix.bat), puis relance CodeView.");
+      if (s.panes[i].voice === "busy") return;
+      if (rec?.pane === i) return void finishMic(i);
+      if (rec) await finishMic(rec.pane); // un seul micro à la fois : on boucle d'abord l'autre fenêtre
+      try {
+        const r = await startRecording({ onLevel: (l) => levelListeners.forEach((f) => f(i, l)), onAutoStop: () => void finishMic(i) });
+        rec = { pane: i, r };
+        setPane(i, { voice: "rec" });
+        set({ focused: i });
+      } catch (e) { get().say(micError(e)); }
+    },
+    async refreshVoice() {
+      try {
+        const voice = await api<AppState["voice"]>("GET", "/api/voice/status");
+        set((s) => (s.app ? { app: { ...s.app, voice } } : s));
+        if (voice.state === "loading") setTimeout(() => void get().refreshVoice(), 2000); // le premier lancement peut télécharger le modèle
+      } catch { /* hors-ligne */ }
+    },
+    async patchSettings(p) {
+      set({ app: await api("PUT", "/api/settings", p) });
+      if ("voiceModel" in p) setTimeout(() => void get().refreshVoice(), 500);
+    },
   };
 });

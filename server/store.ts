@@ -19,7 +19,12 @@ export interface Settings {
   model: { provider: ProviderId; id: string } | null;
   baseUrls: Partial<Record<ProviderId, string>>;
   n8nUrl: string;
-  maxSteps: number;
+  /** Modèle Whisper du moteur vocal local (tiny, base, small, medium, large-v3-turbo…). */
+  voiceModel: string;
+  /** Langue parlée : code ISO (« fr », « en ») ou « auto ». */
+  voiceLang: string;
+  /** Envoyer le message à l'agent dès que la dictée est transcrite. */
+  voiceAutoSend: boolean;
 }
 
 const DEFAULTS: Settings = {
@@ -30,7 +35,9 @@ const DEFAULTS: Settings = {
   model: null,
   baseUrls: {},
   n8nUrl: "",
-  maxSteps: 40,
+  voiceModel: "small",
+  voiceLang: "fr",
+  voiceAutoSend: false,
 };
 
 const settingsFile = path.join(DATA_DIR, "settings.json");
@@ -155,6 +162,8 @@ export interface ChatMsg {
   toolCallId?: string;
   name?: string;
   isError?: boolean;
+  /** Message injecté par le serveur (ex. reprise d'une réponse coupée) : jamais montré à l'utilisateur. */
+  auto?: boolean;
 }
 
 export interface Chat {
